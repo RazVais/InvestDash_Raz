@@ -1,0 +1,15 @@
+streamlit>=1.32
+pytest>=7.4
+yfinance==0.2.54
+numpy>=1.22.4,<2
+pandas
+plotly>=5.18,<6
+finnhub-python
+finvizfinance>=0.14
+exchange-calendars
+pytz
+requests
+
+# dev
+ruff>=0.4
+black>=24.4

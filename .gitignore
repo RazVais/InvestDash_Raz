@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Portfolio data (personal, gitignored)
+portfolio.json
+
+# Environment / secrets
+.env
+.env.*
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Editors
+.DS_Store
+.idea/
+*.swp
+*.swo
+.vscode/settings.json
+
+# Ruff / Black cache
+.ruff_cache/
+
+# Windows
+Thumbs.db
