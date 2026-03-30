@@ -33,7 +33,7 @@ def render_suggestions(portfolio, data, td_str, api_key=""):
     for s in candidates:
         t   = s["ticker"]
         p   = prices.get(t)
-        tgt = targets.get(t, {})
+        tgt = targets.get(t) or {}
         con = consensus.get(t, {})
 
         price_val  = p["price"]   if p else None

@@ -5,8 +5,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from src.config   import HE, COLOR, TICKERS_BY_LAYER, LAYER_COLORS, TICKER_NAMES
-from src.portfolio import all_tickers, lots_for_ticker
+from datetime import date
+
+from src.config   import HE, COLOR, LAYER_COLORS, TICKER_NAMES
+from src.portfolio import all_tickers, lots_for_ticker, add_lot, remove_ticker, get_layer_for_ticker
 from src.data.prices import lookup_buy_price
 from src.data.technicals import compute_correlation_matrix
 from src.ui_helpers import section_title, color_legend, term_glossary
@@ -19,6 +21,7 @@ def render_overview(portfolio, data, market_state, td_str):
     macro       = data["macro"]
 
     _render_macro_strip(macro)
+    _render_manage_tickers(portfolio)
     st.divider()
     _render_performance_table(portfolio, prices, targets, consensus)
     st.divider()
@@ -29,6 +32,51 @@ def render_overview(portfolio, data, market_state, td_str):
         _render_allocation_donut(portfolio, prices)
     st.divider()
     _render_correlation_matrix(prices)
+
+
+def _render_manage_tickers(portfolio):
+    """Compact add / remove ticker form embedded in the overview tab."""
+    with st.expander("➕ / 🗑 ניהול ניירות ערך", expanded=False):
+        col_add, col_rm = st.columns(2)
+
+        with col_add:
+            st.markdown(f'<div style="color:{COLOR["primary"]};font-weight:700;font-size:13px">הוסף נייר ערך</div>',
+                        unsafe_allow_html=True)
+            layers = list(portfolio["layers"].keys())
+            new_ticker = st.text_input("סימול (Ticker)", key="ov_add_ticker",
+                                       placeholder="e.g. NVDA").upper().strip()
+            new_layer  = st.selectbox("שכבה", layers + ["➕ שכבה חדשה..."], key="ov_add_layer")
+            if new_layer == "➕ שכבה חדשה...":
+                new_layer = st.text_input("שם שכבה חדשה", key="ov_add_layer_new").strip()
+            new_shares = st.number_input("כמות מניות", min_value=0.001, step=0.001,
+                                         format="%.3f", key="ov_add_shares")
+            new_date   = st.date_input("תאריך קנייה", value=date.today(), key="ov_add_date")
+
+            if st.button("הוסף לתיק", key="ov_add_btn", use_container_width=True):
+                if not new_ticker:
+                    st.error("הכנס סימול.")
+                elif not new_layer:
+                    st.error("הכנס שם שכבה.")
+                else:
+                    add_lot(portfolio, new_layer, new_ticker, new_shares, new_date)
+                    st.cache_data.clear()
+                    st.success(f"נוסף {new_ticker} — רענון נתונים...")
+                    st.rerun()
+
+        with col_rm:
+            st.markdown(f'<div style="color:{COLOR["negative"]};font-weight:700;font-size:13px">הסר נייר ערך</div>',
+                        unsafe_allow_html=True)
+            tickers_list = sorted(all_tickers(portfolio))
+            if not tickers_list:
+                st.caption("אין ניירות ערך בתיק.")
+            else:
+                rm_ticker = st.selectbox("בחר סימול להסרה", tickers_list, key="ov_rm_ticker")
+                st.warning(f"יסיר את כל הלוטים של {rm_ticker}", icon="⚠️")
+                if st.button(f"הסר {rm_ticker}", key="ov_rm_btn", use_container_width=True):
+                    remove_ticker(portfolio, rm_ticker)
+                    st.cache_data.clear()
+                    st.success(f"{rm_ticker} הוסר מהתיק.")
+                    st.rerun()
 
 
 def _render_macro_strip(macro):
@@ -78,50 +126,48 @@ def _render_performance_table(portfolio, prices, targets, consensus):
     voo_1y = ((voo_hist.iloc[-1] / voo_hist.iloc[0]) - 1) * 100 if voo_hist is not None and len(voo_hist) > 1 else 0.0
 
     rows = []
-    for layer, tickers_in_layer in TICKERS_BY_LAYER.items():
-        for t in tickers_in_layer:
-            if t not in all_tickers(portfolio):
-                continue
-            p   = prices.get(t)
-            tgt = targets.get(t)
-            con = consensus.get(t, {})
+    for t in all_tickers(portfolio):
+        layer = get_layer_for_ticker(portfolio, t) or "אחר"
+        p   = prices.get(t)
+        tgt = targets.get(t)
+        con = consensus.get(t, {})
 
-            price_str  = f"${p['price']:.2f}" if p else "—"
-            change_val = p["change"] if p else None
-            change_str = (
-                f'<span style="color:{COLOR["positive"] if change_val >= 0 else COLOR["negative"]}">'
-                f'{change_val:+.2f}%</span>'
-                if change_val is not None else "—"
-            )
+        price_str  = f"${p['price']:.2f}" if p else "—"
+        change_val = p["change"] if p else None
+        change_str = (
+            f'<span style="color:{COLOR["positive"] if change_val >= 0 else COLOR["negative"]}">'
+            f'{change_val:+.2f}%</span>'
+            if change_val is not None else "—"
+        )
 
-            upside_str = "—"
-            if p and tgt and tgt.get("mean"):
-                up = ((tgt["mean"] - p["price"]) / p["price"]) * 100
-                uc = COLOR["positive"] if up >= 0 else COLOR["negative"]
-                upside_str = f'<span style="color:{uc}">{up:+.1f}%</span>'
+        upside_str = "—"
+        if p and tgt and tgt.get("mean"):
+            up = ((tgt["mean"] - p["price"]) / p["price"]) * 100
+            uc = COLOR["positive"] if up >= 0 else COLOR["negative"]
+            upside_str = f'<span style="color:{uc}">{up:+.1f}%</span>'
 
-            alpha_str = "—"
-            if p and p.get("history") is not None and len(p["history"]) > 1:
-                t_1y = ((p["history"].iloc[-1] / p["history"].iloc[0]) - 1) * 100
-                alpha = t_1y - voo_1y
-                ac    = COLOR["positive"] if alpha >= 0 else COLOR["negative"]
-                alpha_str = f'<span style="color:{ac}">{alpha:+.1f}%</span>'
+        alpha_str = "—"
+        if p and p.get("history") is not None and len(p["history"]) > 1:
+            t_1y = ((p["history"].iloc[-1] / p["history"].iloc[0]) - 1) * 100
+            alpha = t_1y - voo_1y
+            ac    = COLOR["positive"] if alpha >= 0 else COLOR["negative"]
+            alpha_str = f'<span style="color:{ac}">{alpha:+.1f}%</span>'
 
-            label = con.get("label", "N/A")
-            lc    = COLOR["positive"] if "Buy" in label else (COLOR["negative"] if "Sell" in label else COLOR["neutral"])
-            cons_str = f'<span style="color:{lc}">{label}</span>'
+        label = con.get("label", "N/A")
+        lc    = COLOR["positive"] if "Buy" in label else (COLOR["negative"] if "Sell" in label else COLOR["neutral"])
+        cons_str = f'<span style="color:{lc}">{label}</span>'
 
-            rows.append(
-                f'<tr>'
-                f'<td style="padding:4px 8px;color:{LAYER_COLORS.get(layer, COLOR["primary"])};font-weight:600">{t}</td>'
-                f'<td style="padding:4px 8px;font-size:11px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t, "")}</td>'
-                f'<td style="padding:4px 8px">{price_str}</td>'
-                f'<td style="padding:4px 8px">{change_str}</td>'
-                f'<td style="padding:4px 8px">{upside_str}</td>'
-                f'<td style="padding:4px 8px">{alpha_str}</td>'
-                f'<td style="padding:4px 8px">{cons_str}</td>'
-                f'</tr>'
-            )
+        rows.append(
+            f'<tr>'
+            f'<td style="padding:4px 8px;color:{LAYER_COLORS.get(layer, COLOR["primary"])};font-weight:600">{t}</td>'
+            f'<td style="padding:4px 8px;font-size:11px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t, t)}</td>'
+            f'<td style="padding:4px 8px">{price_str}</td>'
+            f'<td style="padding:4px 8px">{change_str}</td>'
+            f'<td style="padding:4px 8px">{upside_str}</td>'
+            f'<td style="padding:4px 8px">{alpha_str}</td>'
+            f'<td style="padding:4px 8px">{cons_str}</td>'
+            f'</tr>'
+        )
 
     th = "padding:6px 8px;color:{c};border-bottom:1px solid #444;text-align:right".format(c=COLOR["primary"])
     header = (
@@ -201,16 +247,14 @@ def _render_pnl_summary(portfolio, prices):
 
 def _render_allocation_donut(portfolio, prices):
     labels, values, colors = [], [], []
-    for layer, tickers_in_layer in TICKERS_BY_LAYER.items():
+    for layer, lots in portfolio["layers"].items():
         layer_val = 0.0
-        for t in tickers_in_layer:
-            if t not in all_tickers(portfolio):
-                continue
+        for lot in lots:
+            t = lot["ticker"]
             p = prices.get(t)
             if not p:
                 continue
-            for _l, lot in lots_for_ticker(portfolio, t):
-                layer_val += max(lot["shares"], 0) * p["price"]
+            layer_val += max(lot.get("shares", 0), 0) * p["price"]
         if layer_val > 0:
             labels.append(layer)
             values.append(layer_val)

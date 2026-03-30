@@ -1,49 +1,153 @@
-"""News tab — latest articles per ticker."""
+"""News tab — company brief, sector, competitors, and latest articles."""
 
 import pandas as pd
 import streamlit as st
 
-from src.config    import HE, COLOR, TICKER_NAMES
+from src.config    import HE, COLOR, TICKER_NAMES, TICKER_PEERS, TICKER_SECTOR
 from src.portfolio import all_tickers
+from src.data.news import get_company_profile
+from src.market    import get_market_state
 
 
-def render_news(portfolio, data):
+def render_news(portfolio, data, td_str=None):
     news    = data["news"]
     tickers = sorted(all_tickers(portfolio))
 
+    if not tickers:
+        st.info("הוסף ניירות ערך לתיק כדי לראות חדשות.")
+        return
+
+    if td_str is None:
+        td_str = str(get_market_state()["last_trading_day"])
+
     sel = st.selectbox(
         "בחר מניה",
-        ["הכל"] + tickers,
+        tickers,
         key="news_sel",
-        format_func=lambda t: t if t == "הכל" else f"{t} — {TICKER_NAMES.get(t,'')}",
+        format_func=lambda t: f"{t} — {TICKER_NAMES.get(t, t)}",
     )
 
-    show_tickers = tickers if sel == "הכל" else [sel]
+    _render_company_brief(sel, td_str)
+    st.divider()
+    _render_articles(sel, news)
 
-    for t in show_tickers:
-        articles = news.get(t, [])
-        if not articles:
-            continue
 
+def _render_company_brief(ticker: str, td_str: str):
+    """Company profile card: description, sector, industry, competitors."""
+    profile = get_company_profile(ticker, td_str)
+
+    name     = profile.get("name") or TICKER_NAMES.get(ticker, ticker)
+    _static  = TICKER_SECTOR.get(ticker, ("", ""))
+    sector   = profile.get("sector") or _static[0]
+    industry = profile.get("industry") or _static[1]
+    desc     = profile.get("description", "")
+    website  = profile.get("website", "")
+    emp      = profile.get("employees")
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div dir="rtl" style="margin-bottom:4px">'
+        f'<span style="font-size:22px;font-weight:800;color:{COLOR["primary"]}">{ticker}</span>'
+        f'<span style="font-size:15px;color:{COLOR["text_dim"]};margin-right:10px"> {name}</span>'
+        + (f'<a href="{website}" target="_blank" style="font-size:11px;color:{COLOR["primary"]};'
+           f'text-decoration:none;margin-right:8px">🌐 אתר</a>' if website else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Sector / industry / employees chips ───────────────────────────────────
+    chips = []
+    if sector:
+        chips.append(("📊", sector))
+    if industry:
+        chips.append(("🏭", industry))
+    if emp:
+        chips.append(("👥", f"{emp:,} עובדים"))
+
+    if chips:
+        chip_html = "".join(
+            f'<span style="background:#1f2937;border:1px solid #374151;border-radius:20px;'
+            f'padding:2px 10px;font-size:11px;color:{COLOR["text_dim"]};margin-left:6px">'
+            f'{icon} {label}</span>'
+            for icon, label in chips
+        )
         st.markdown(
-            f'<div style="direction:rtl;font-weight:700;color:{COLOR["primary"]};'
-            f'margin-top:12px;font-size:13px">{t} — {TICKER_NAMES.get(t,"")}</div>',
+            f'<div dir="rtl" style="margin-bottom:10px">{chip_html}</div>',
             unsafe_allow_html=True,
         )
 
-        for art in articles:
-            pub  = art.get("published")
-            date_str = pub.strftime("%d.%m.%Y %H:%M") if pd.notna(pub) else ""
-            link = art.get("link", "#")
-            title = art.get("title", "")
-            publisher = art.get("publisher", "")
+    # ── Description ───────────────────────────────────────────────────────────
+    if desc:
+        # Show first 3 sentences as preview, rest in expander
+        sentences = desc.replace("  ", " ").split(". ")
+        preview   = ". ".join(sentences[:3]).strip()
+        if not preview.endswith("."):
+            preview += "."
 
-            st.markdown(
-                f'<div style="direction:rtl;padding:6px 0;border-bottom:1px solid #222">'
-                f'<a href="{link}" target="_blank" style="color:#fff;text-decoration:none;font-size:12px">'
-                f'{title}</a>'
-                f'<br><span style="font-size:10px;color:{COLOR["text_dim"]}">'
-                f'{publisher} &nbsp;·&nbsp; {date_str}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            f'<div dir="ltr" style="font-size:12px;color:#cccccc;line-height:1.7;'
+            f'background:#111827;border-radius:8px;padding:12px 16px;margin-bottom:10px">'
+            f'{preview}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if len(sentences) > 3:
+            with st.expander("קרא עוד"):
+                st.markdown(
+                    f'<div dir="ltr" style="font-size:12px;color:#cccccc;line-height:1.7">'
+                    f'{desc}</div>',
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.caption(f"אין תיאור חברה זמין עבור {ticker}.")
+
+    # ── Competitors ───────────────────────────────────────────────────────────
+    peers = TICKER_PEERS.get(ticker, [])
+    if peers:
+        tags = "".join(
+            f'<span style="background:#1a1f2e;border:1px solid #2d3748;border-radius:6px;'
+            f'padding:3px 10px;font-size:11px;color:#ffffff;margin-left:6px;white-space:nowrap">'
+            f'<span style="color:{COLOR["primary"]};font-weight:700">{sym}</span>'
+            f' <span style="color:{COLOR["text_dim"]}">{nm}</span></span>'
+            for sym, nm in peers
+        )
+        st.markdown(
+            f'<div dir="rtl" style="margin-bottom:6px">'
+            f'<span style="font-size:11px;color:{COLOR["text_dim"]};margin-left:8px">מתחרים עיקריים:</span>'
+            f'{tags}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_articles(ticker: str, news: dict):
+    """Render news articles for the selected ticker."""
+    articles = news.get(ticker, [])
+
+    st.markdown(
+        f'<div dir="rtl" style="font-weight:700;color:{COLOR["primary"]};'
+        f'font-size:13px;margin-bottom:8px">📰 חדשות אחרונות — {ticker}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not articles:
+        st.info(f"אין חדשות זמינות עבור {ticker} כרגע.")
+        return
+
+    for art in articles:
+        pub       = art.get("published")
+        date_str  = pub.strftime("%d.%m.%Y %H:%M") if pub else ""
+        link      = art.get("link", "#")
+        title     = art.get("title", "")
+        publisher = art.get("publisher", "")
+
+        st.markdown(
+            f'<div dir="ltr" style="padding:8px 0;border-bottom:1px solid #1f2937">'
+            f'<a href="{link}" target="_blank" '
+            f'style="color:#ffffff;text-decoration:none;font-size:13px;font-weight:500;'
+            f'line-height:1.5">{title}</a><br>'
+            f'<span style="font-size:10px;color:{COLOR["text_dim"]}">'
+            f'{publisher}'
+            + (f' &nbsp;·&nbsp; {date_str}' if date_str else "")
+            + '</span></div>',
+            unsafe_allow_html=True,
+        )

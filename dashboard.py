@@ -315,7 +315,7 @@ def main():
     elif active == "דגלים אדומים":
         render_red_flags(portfolio, data, td_str)
     elif active == "חדשות":
-        render_news(portfolio, data)
+        render_news(portfolio, data, td_str)
     elif active == "💡 המלצות":
         render_suggestions(portfolio, data, td_str, api_key)
 

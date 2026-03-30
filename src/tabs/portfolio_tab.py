@@ -3,7 +3,7 @@
 import streamlit as st
 from datetime import date
 
-from src.config    import HE, COLOR, TICKERS_BY_LAYER, TICKER_NAMES
+from src.config    import HE, COLOR, TICKER_NAMES
 from src.portfolio import (all_tickers, lots_for_ticker, add_lot,
                            update_lot, remove_lot, remove_ticker)
 from src.data.prices import lookup_buy_price
@@ -28,8 +28,13 @@ def render_portfolio(portfolio, data):
 def _render_pnl_table(portfolio, prices):
     section_title("פירוט תיק", "עלות, שווי ורווח/הפסד לפי תאריכי קנייה (לוטים)")
 
-    _TH = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:1px solid #333;font-size:11px;text-align:right"
+    _TH = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:2px solid #333;font-size:11px;text-align:right"
     _TD = "padding:5px 8px;font-size:11px"
+    _SPACER = (
+        '<tr style="height:6px;background:#0e1117">'
+        '<td colspan="7" style="padding:0;border:none"></td>'
+        '</tr>'
+    )
 
     rows_html       = ""
     grand_cost      = grand_value = grand_pnl = 0.0
@@ -65,7 +70,8 @@ def _render_pnl_table(portfolio, prices):
 
             lot_rows.append(
                 f'<tr style="background:#161616">'
-                f'<td style="{_TD};padding-right:20px;color:{COLOR["text_dim"]}">{bd}</td>'
+                f'<td style="{_TD};padding-right:20px;color:{COLOR["text_dim"]};'
+                f'border-left:3px solid #2a3a2a">{bd}</td>'
                 f'<td style="{_TD}"></td>'
                 f'<td style="{_TD}">{shares:.3f}</td>'
                 f'<td style="{_TD}">{bp_str}</td>'
@@ -89,16 +95,25 @@ def _render_pnl_table(portfolio, prices):
         else:
             tot_str = f'<span style="color:{COLOR["text_dim"]}">—</span>'
 
-        # Ticker header row
+        # Spacer between ticker groups (not before the first one)
+        if rows_html:
+            rows_html += _SPACER
+
+        # Ticker header row — top border + left accent bar for visual grouping
+        _HDR_TD = (
+            f"{_TD};font-weight:700;border-top:2px solid #2a2a2a;"
+            f"border-bottom:1px solid #2a2a2a"
+        )
         rows_html += (
             f'<tr style="background:{COLOR["bg_dark"]}">'
-            f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
-            f'<td style="{_TD};font-size:10px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t,"")}</td>'
-            f'<td style="{_TD}">{t_shares:.3f}</td>'
-            f'<td style="{_TD}">{cur_str}</td>'
-            f'<td style="{_TD}">{cost_str}</td>'
-            f'<td style="{_TD}">{val_str}</td>'
-            f'<td style="{_TD}">{tot_str}</td>'
+            f'<td style="{_HDR_TD};color:{COLOR["primary"]};'
+            f'border-left:3px solid {COLOR["primary"]}">{t}</td>'
+            f'<td style="{_HDR_TD};font-size:10px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t,"")}</td>'
+            f'<td style="{_HDR_TD}">{t_shares:.3f}</td>'
+            f'<td style="{_HDR_TD}">{cur_str}</td>'
+            f'<td style="{_HDR_TD}">{cost_str}</td>'
+            f'<td style="{_HDR_TD}">{val_str}</td>'
+            f'<td style="{_HDR_TD}">{tot_str}</td>'
             f'</tr>'
         )
         rows_html += "".join(lot_rows)

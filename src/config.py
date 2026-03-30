@@ -228,6 +228,111 @@ SUGGESTIONS = [
     },
 ]
 
+# ── Static company briefs ─────────────────────────────────────────────────────
+# Shown in the news tab. English text — displayed LTR in the UI.
+TICKER_BRIEFS = {
+    "VOO": (
+        "Vanguard S&P 500 ETF tracks the S&P 500 index — the 500 largest US companies by market cap. "
+        "With an expense ratio of 0.03%, it is one of the lowest-cost and most liquid equity ETFs available. "
+        "Sector exposure is dominated by Technology (~30%), Healthcare (~13%), and Financials (~13%)."
+    ),
+    "CCJ": (
+        "Cameco Corporation is the world's largest publicly traded uranium producer, headquartered in Saskatoon, Canada. "
+        "It operates the McArthur River/Key Lake and Cigar Lake mines — among the highest-grade uranium deposits on Earth. "
+        "Cameco also holds a 49% stake in Westinghouse Electric, a major nuclear fuel and services company, providing leverage to the nuclear renaissance."
+    ),
+    "FCX": (
+        "Freeport-McMoRan is the world's largest publicly traded copper producer, with mines across the Americas and Indonesia (Grasberg — the world's largest copper-gold mine). "
+        "The company is a direct play on the energy transition: copper demand is expected to double by 2035 driven by EVs, grid infrastructure, and data centers. "
+        "It also produces gold and molybdenum as byproducts."
+    ),
+    "ETN": (
+        "Eaton Corporation is a diversified industrial company focused on electrical power management, hydraulics, and vehicle systems. "
+        "It is a key beneficiary of grid modernisation, electrification, and data-centre power demand. "
+        "The electrical segment (~60% of revenue) includes switchgear, circuit breakers, and UPS systems used by hyperscalers and utilities."
+    ),
+    "VRT": (
+        "Vertiv Holdings designs and manufactures critical digital infrastructure — thermal management, power, and IT infrastructure for data centres. "
+        "Its cooling solutions (precision air conditioning, liquid cooling) are central to AI data-centre buildouts, where GPUs generate 5–10× more heat than traditional servers. "
+        "Major customers include hyperscalers (AWS, Azure, Google) and colocation providers."
+    ),
+    "AMD": (
+        "Advanced Micro Devices designs CPUs (EPYC for servers, Ryzen for desktops) and GPUs (Instinct MI series for AI/HPC workloads). "
+        "Its MI300X GPU is the primary competition to NVIDIA's H100/H200 in AI training and inference. "
+        "AMD also supplies custom silicon (CDNA) to Microsoft Azure and Meta for AI accelerators."
+    ),
+    "AMZN": (
+        "Amazon is the world's largest e-commerce marketplace and the leading cloud provider through AWS (~33% cloud market share). "
+        "AWS generates the majority of Amazon's operating income and powers AI services including Bedrock, SageMaker, and Trainium/Inferentia chips. "
+        "Amazon also operates the world's largest logistics network and a fast-growing advertising business."
+    ),
+    "GOOGL": (
+        "Alphabet (Google) operates the world's dominant search engine (~90% market share), YouTube, and Google Cloud Platform (GCP). "
+        "Google Cloud is the third-largest cloud provider and is growing faster than AWS/Azure. "
+        "DeepMind and Google Brain are Alphabet's AI research arms; Gemini is its flagship AI model competing with OpenAI's GPT series."
+    ),
+    "CRWD": (
+        "CrowdStrike provides cloud-native cybersecurity through its Falcon platform, which uses AI to detect and prevent threats across endpoints, cloud, and identity. "
+        "Its agent is installed on ~24,000 customers' systems, generating a proprietary threat-intelligence graph that improves with scale. "
+        "CrowdStrike is the market leader in EDR (Endpoint Detection & Response) with a growing platform consolidation strategy."
+    ),
+    "ESLT": (
+        "Elbit Systems is Israel's largest defense electronics company, listed on both NASDAQ and the Tel Aviv Stock Exchange. "
+        "It supplies military systems (UAVs, electro-optics, C4I, artillery) to over 100 countries, including NATO members and Israel's IDF. "
+        "The ongoing geopolitical environment and global defence spending increases are structural tailwinds for Elbit's order book."
+    ),
+    "TEVA": (
+        "Teva Pharmaceutical is the world's largest generic drug manufacturer, headquartered in Tel Aviv. "
+        "Its branded portfolio includes Austedo (tardive dyskinesia) and Ajovy (migraines), with Austedo growing rapidly. "
+        "Teva completed a major debt-restructuring cycle and is executing a 'Pivot to Growth' strategy focused on complex generics and innovative medicines."
+    ),
+    "EQX": (
+        "Equinox Gold is a Canadian gold producer with 10 operating mines across the Americas, producing ~700k oz/year. "
+        "It is a leveraged gold play — revenues are highly sensitive to the gold price, which benefits from inflation, dollar weakness, and risk-off sentiment. "
+        "Equinox's Greenstone mine in Ontario ramped up in 2024 and is expected to become one of Canada's largest gold mines."
+    ),
+    "AGX": (
+        "Argan Inc. is a holding company whose primary subsidiary Gemma Power Systems builds natural gas and renewable power plants under fixed-price EPC (Engineering, Procurement, Construction) contracts. "
+        "It benefits from the US energy infrastructure buildout driven by data-centre power demand and grid modernisation. "
+        "Argan carries no debt and maintains a significant cash position relative to its market cap."
+    ),
+}
+
+# ── Static sector / industry labels ───────────────────────────────────────────
+TICKER_SECTOR = {
+    "VOO":   ("ETFs", "Broad Market"),
+    "CCJ":   ("Energy", "Uranium Mining"),
+    "FCX":   ("Materials", "Copper Mining"),
+    "ETN":   ("Industrials", "Electrical Equipment"),
+    "VRT":   ("Technology", "Data Centre Infrastructure"),
+    "AMD":   ("Technology", "Semiconductors"),
+    "AMZN":  ("Consumer Discretionary / Technology", "E-Commerce & Cloud"),
+    "GOOGL": ("Communication Services", "Internet & AI"),
+    "CRWD":  ("Technology", "Cybersecurity"),
+    "ESLT":  ("Defense", "Defense Electronics"),
+    "TEVA":  ("Healthcare", "Pharmaceuticals (Generics)"),
+    "EQX":   ("Materials", "Gold Mining"),
+    "AGX":   ("Industrials", "Power Plant EPC"),
+}
+
+# ── Main competitors per ticker ───────────────────────────────────────────────
+# Used in the news tab company brief. Format: {ticker: [(symbol, display_name), ...]}
+TICKER_PEERS = {
+    "VOO":   [("SPY", "SPDR S&P 500"), ("IVV", "iShares S&P 500"), ("QQQ", "Invesco NASDAQ-100")],
+    "CCJ":   [("NXE", "NexGen Energy"), ("URA", "Global X Uranium ETF"), ("DNN", "Denison Mines")],
+    "FCX":   [("SCCO", "Southern Copper"), ("BHP", "BHP Group"), ("TECK", "Teck Resources")],
+    "ETN":   [("EMR", "Emerson Electric"), ("ROK", "Rockwell Automation"), ("ABB", "ABB Ltd")],
+    "VRT":   [("DELL", "Dell Technologies"), ("HPE", "Hewlett Packard Enterprise"), ("JCI", "Johnson Controls")],
+    "AMD":   [("NVDA", "NVIDIA"), ("INTC", "Intel"), ("QCOM", "Qualcomm")],
+    "AMZN":  [("MSFT", "Microsoft Azure"), ("GOOGL", "Google Cloud"), ("BABA", "Alibaba")],
+    "GOOGL": [("MSFT", "Microsoft"), ("META", "Meta"), ("AMZN", "Amazon")],
+    "CRWD":  [("PANW", "Palo Alto Networks"), ("S", "SentinelOne"), ("FTNT", "Fortinet")],
+    "ESLT":  [("LMT", "Lockheed Martin"), ("RTX", "Raytheon"), ("BA", "Boeing")],
+    "TEVA":  [("MYL", "Viatris"), ("PRGO", "Perrigo"), ("AGN", "Allergan")],
+    "EQX":   [("GFI", "Gold Fields"), ("AEM", "Agnico Eagle"), ("WPM", "Wheaton Precious Metals")],
+    "AGX":   [("PWR", "Quanta Services"), ("MTZ", "MasTec"), ("TTEK", "Tetra Tech")],
+}
+
 # ── Theme colors ───────────────────────────────────────────────────────────────
 COLOR = {
     "primary":   "#00cf8d",

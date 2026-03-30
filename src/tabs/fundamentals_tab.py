@@ -106,7 +106,7 @@ def _render_earnings_dividends(tickers, prices, earnings):
 
         div_str = (
             f'<span style="color:{COLOR["positive"]};font-weight:700">{div:.2f}%</span>'
-            if div and div > 0.05 else
+            if div and div > 0.01 else
             f'<span style="color:{COLOR["text_dim"]}">ללא דיבידנד</span>'
         )
 
