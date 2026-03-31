@@ -1,11 +1,12 @@
 """News fetcher — Yahoo Finance RSS (no auth, no rate-limit issues)."""
 
+from datetime import datetime, timezone
 import email.utils
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 
 import requests
 import streamlit as st
+
 from src.config import TICKER_BRIEFS
 from src.logger import get_logger
 

@@ -1,9 +1,7 @@
 """Shared fixtures for the RazDashboard test suite."""
 
-import pytest
 import pandas as pd
-import numpy as np
-
+import pytest
 
 # ── Portfolio fixtures ────────────────────────────────────────────────────────
 

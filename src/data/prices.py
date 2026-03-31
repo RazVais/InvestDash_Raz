@@ -16,10 +16,12 @@ Israeli stocks note (ESLT):
 """
 
 import time
-import requests as _req
+
 import pandas as pd
-import yfinance as yf
+import requests as _req
 import streamlit as st
+import yfinance as yf
+
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -84,7 +86,6 @@ def _fetch_yahoo_v8(ticker, period="1y"):
 def _fetch_yahoo_v8_range(ticker, start: str, end: str):
     """Yahoo v8 for a specific date range (used by get_buy_price)."""
     try:
-        import datetime as _dt
         p1 = int(pd.Timestamp(start).timestamp())
         p2 = int(pd.Timestamp(end).timestamp())
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"

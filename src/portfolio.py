@@ -7,8 +7,9 @@ Each ticker can have multiple lots (separate buy events):
   ]
 """
 
-import json
 from datetime import date
+import json
+
 from src.config import PORTFOLIO_FILE, TICKERS_BY_LAYER
 from src.logger import get_logger
 

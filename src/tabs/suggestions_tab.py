@@ -2,11 +2,11 @@
 
 import streamlit as st
 
-from src.config   import COLOR, SUGGESTIONS, TICKER_NAMES
+from src.config import COLOR, SUGGESTIONS
+from src.data.analysts import get_analyst_targets, get_consensus
+from src.data.prices import get_stock_data
 from src.portfolio import all_tickers
-from src.data.prices   import get_stock_data
-from src.data.analysts import get_consensus, get_analyst_targets
-from src.ui_helpers import section_title, color_legend, term_glossary
+from src.ui_helpers import color_legend, section_title, term_glossary
 
 
 def render_suggestions(portfolio, data, td_str, api_key=""):
@@ -112,8 +112,8 @@ def render_suggestions(portfolio, data, td_str, api_key=""):
                 f'  </div>'
                 if comp_tags else ""
             ) +
-            f'</div>'  # end stats row
-            f'</div>'  # end card
+            '</div>'  # end stats row
+            '</div>'  # end card
         )
         st.markdown(card_html, unsafe_allow_html=True)
 

@@ -33,8 +33,10 @@ class _MemCookieCache:
 def apply():
     """Patch yfinance's cache managers. Call once at import time."""
     from yfinance.cache import (
-        _TzCacheManager as _YfTzMgr,
         _CookieCacheManager as _YfCookieMgr,
+    )
+    from yfinance.cache import (
+        _TzCacheManager as _YfTzMgr,
     )
     _YfTzMgr._tz_cache = _MemTzCache()
     _YfCookieMgr._Cookie_cache = _MemCookieCache()

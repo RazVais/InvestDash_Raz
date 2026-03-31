@@ -1,22 +1,19 @@
 """Tests for src/tabs/red_flags.py — all flag evaluation branches."""
 
-import pytest
-import pandas as pd
-import numpy as np
-from datetime import datetime, timezone
 
+import pandas as pd
+
+from src.config import FLAG_THRESHOLDS
 from src.tabs.red_flags import (
-    _check_price_drop,
     _analyst_proxy,
-    _check_price_drop_plus_downgrades,
     _check_major_sell,
-    _check_voo_allocation,
+    _check_price_drop,
+    _check_price_drop_plus_downgrades,
     _check_thesis,
+    _check_voo_allocation,
     _count_downgrades,
     get_flag_summary,
 )
-from src.config import FLAG_THRESHOLDS
-
 
 _PRX = FLAG_THRESHOLDS["_proxy"]
 _PTF = FLAG_THRESHOLDS["_portfolio"]

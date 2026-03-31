@@ -1,7 +1,9 @@
 """Fundamental data via finvizfinance."""
 
 import time
+
 import streamlit as st
+
 from src.logger import get_logger
 
 _log = get_logger(__name__)

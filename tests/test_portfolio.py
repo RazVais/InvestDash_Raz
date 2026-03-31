@@ -1,16 +1,20 @@
 """Tests for src/portfolio.py — mutations, helpers, persistence."""
 
-import json
-import pytest
 from datetime import date
+import json
 
 import src.portfolio as pm
 from src.portfolio import (
-    all_tickers, lots_for_ticker, get_layer_for_ticker,
-    add_lot, update_lot, remove_lot, remove_ticker,
-    load_portfolio, save_portfolio,
+    add_lot,
+    all_tickers,
+    get_layer_for_ticker,
+    load_portfolio,
+    lots_for_ticker,
+    remove_lot,
+    remove_ticker,
+    save_portfolio,
+    update_lot,
 )
-
 
 # ── Ticker helpers ─────────────────────────────────────────────────────────────
 

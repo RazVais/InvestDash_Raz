@@ -1,6 +1,7 @@
 """Shared UI helpers — section titles, color legends, term glossaries."""
 
 import streamlit as st
+
 from src.config import COLOR
 
 

@@ -2,8 +2,8 @@
 Callers pass a pd.Series of closing prices and receive pd.Series back.
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
 def sma(close, window):

@@ -1,12 +1,11 @@
 """News tab — company brief, sector, competitors, and latest articles."""
 
-import pandas as pd
 import streamlit as st
 
-from src.config    import HE, COLOR, TICKER_NAMES, TICKER_PEERS, TICKER_SECTOR
-from src.portfolio import all_tickers
+from src.config import COLOR, TICKER_NAMES, TICKER_PEERS, TICKER_SECTOR
 from src.data.news import get_company_profile
-from src.market    import get_market_state
+from src.market import get_market_state
+from src.portfolio import all_tickers
 
 
 def render_news(portfolio, data, td_str=None):

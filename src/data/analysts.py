@@ -1,9 +1,11 @@
 """Analyst data: price targets, consensus, upgrades/downgrades."""
 
 import time
+
 import pandas as pd
-import yfinance as yf
 import streamlit as st
+import yfinance as yf
+
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -14,7 +16,6 @@ try:
 except ImportError:
     FINNHUB_AVAILABLE = False
 
-from src.config import SELL_GRADES
 
 
 # ── Price targets ─────────────────────────────────────────────────────────────

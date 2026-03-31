@@ -6,9 +6,9 @@ Usage:
     _log.info("Fetching data", extra={"ticker": "AMD"})
     _log.error("Fetch failed", exc_info=True, extra={"ticker": "AMD"})
 """
+from datetime import datetime
 import logging
 import sys
-from datetime import datetime
 
 
 class _ContextFormatter(logging.Formatter):

@@ -4,9 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.config   import HE, COLOR, TICKER_NAMES, MAJOR_FIRMS
+from src.config import COLOR, MAJOR_FIRMS, TICKER_NAMES
 from src.portfolio import all_tickers
-from src.ui_helpers import section_title, color_legend, term_glossary
+from src.ui_helpers import color_legend, section_title, term_glossary
 
 
 def render_analysts(portfolio, data):
@@ -43,9 +43,9 @@ def _render_consensus_table(tickers, consensus, prices):
 
         price_str = f"${p['price']:.2f}" if p else "—"
 
-        # Mini bar widths (% of total analysts)
-        def _w(n):
-            return int(n / tot * 60) if tot > 0 else 0
+        # Mini bar widths (% of total analysts) — capture tot in default arg to avoid B023
+        def _w(n, _tot=tot):
+            return int(n / _tot * 60) if _tot > 0 else 0
 
         sb, b, h, s, ss = (c.get(k, 0) for k in ("strong_buy","buy","hold","sell","strong_sell"))
         bar = (
@@ -128,31 +128,31 @@ def _render_target_chart(tickers, prices, targets):
         x=t_list, y=means,
         mode="markers",
         name="יעד ממוצע",
-        marker=dict(color=COLOR["primary"], size=10, symbol="diamond"),
-        error_y=dict(
-            type="data",
-            symmetric=False,
-            array=[h - m for h, m in zip(highs, means)],
-            arrayminus=[m - l for m, l in zip(means, lows)],
-            color="#555",
-            thickness=2,
-        ),
+        marker={"color": COLOR["primary"], "size": 10, "symbol": "diamond"},
+        error_y={
+            "type": "data",
+            "symmetric": False,
+            "array": [h - m for h, m in zip(highs, means)],
+            "arrayminus": [m - lo for m, lo in zip(means, lows)],
+            "color": "#555",
+            "thickness": 2,
+        },
     ))
     # Current price
     fig.add_trace(go.Scatter(
         x=t_list, y=currents,
         mode="markers",
         name="מחיר נוכחי",
-        marker=dict(color=COLOR["warning"], size=8, symbol="circle"),
+        marker={"color": COLOR["warning"], "size": 8, "symbol": "circle"},
     ))
 
     fig.update_layout(
         height=300,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#111111",
-        font=dict(color="#ffffff", size=11),
-        legend=dict(orientation="h", y=1.08),
-        margin=dict(t=20, b=20, l=20, r=20),
+        font={"color": "#ffffff", "size": 11},
+        legend={"orientation": "h", "y": 1.08},
+        margin={"t": 20, "b": 20, "l": 20, "r": 20},
         hovermode="x unified",
     )
     fig.update_xaxes(gridcolor="#222")

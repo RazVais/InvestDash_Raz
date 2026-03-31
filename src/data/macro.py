@@ -1,8 +1,9 @@
 """Macro indicators: VIX, US 10-year yield, DXY dollar index."""
 
-import yfinance as yf
 import streamlit as st
-from src.config import MACRO_SYMBOLS, COMMODITY_SYMBOLS
+import yfinance as yf
+
+from src.config import COMMODITY_SYMBOLS, MACRO_SYMBOLS
 from src.logger import get_logger
 
 _log = get_logger(__name__)

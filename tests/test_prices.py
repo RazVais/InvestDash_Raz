@@ -1,6 +1,5 @@
 """Tests for src/data/prices.py — lookup_buy_price (no network calls)."""
 
-import pytest
 import pandas as pd
 
 from src.data.prices import lookup_buy_price
