@@ -1,17 +1,16 @@
 """Overview tab — macro strip, performance table, P&L summary, donut chart, correlation matrix."""
 
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import streamlit as st
-
 from datetime import date
 
-from src.config   import HE, COLOR, LAYER_COLORS, TICKER_NAMES
-from src.portfolio import all_tickers, lots_for_ticker, add_lot, remove_ticker, get_layer_for_ticker
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from src.config import COLOR, HE, LAYER_COLORS, TICKER_NAMES
 from src.data.prices import lookup_buy_price
 from src.data.technicals import compute_correlation_matrix
-from src.ui_helpers import section_title, color_legend, term_glossary
+from src.portfolio import add_lot, all_tickers, get_layer_for_ticker, lots_for_ticker, remove_ticker
+from src.ui_helpers import color_legend, section_title, term_glossary
 
 
 def render_overview(portfolio, data, market_state, td_str):
@@ -120,7 +119,6 @@ def _render_performance_table(portfolio, prices, targets, consensus):
     section_title("ביצועי תיק", "מחיר נוכחי, ביצוע שנתי מול VOO ויעדי אנליסטים לכל נייר")
 
     voo_p = prices.get("VOO")
-    voo_change = voo_p["change"] if voo_p else 0.0
     # Use 1-year VOO return as alpha baseline
     voo_hist = voo_p["history"] if voo_p and voo_p.get("history") is not None else None
     voo_1y = ((voo_hist.iloc[-1] / voo_hist.iloc[0]) - 1) * 100 if voo_hist is not None and len(voo_hist) > 1 else 0.0
@@ -274,7 +272,7 @@ def _render_allocation_donut(portfolio, prices):
     ))
     fig.update_layout(
         showlegend=False,
-        margin=dict(t=10, b=10, l=10, r=10),
+        margin={"t": 10, "b": 10, "l": 10, "r": 10},
         height=220,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -313,15 +311,15 @@ def _render_correlation_matrix(prices):
         colorscale="RdYlGn",
         zmin=-1, zmax=1,
         showscale=True,
-        colorbar=dict(thickness=12, len=0.8),
+        colorbar={"thickness": 12, "len": 0.8},
     ))
     fig.update_layout(
         height=350,
-        margin=dict(t=10, b=10, l=10, r=10),
+        margin={"t": 10, "b": 10, "l": 10, "r": 10},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#ffffff", size=10),
-        xaxis=dict(side="bottom"),
+        font={"color": "#ffffff", "size": 10},
+        xaxis={"side": "bottom"},
     )
     st.plotly_chart(fig, use_container_width=True)
     color_legend([

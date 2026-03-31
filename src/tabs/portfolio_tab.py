@@ -1,13 +1,20 @@
 """Portfolio tab — multi-lot P&L table, add/edit/remove lot forms."""
 
-import streamlit as st
 from datetime import date
 
-from src.config    import HE, COLOR, TICKER_NAMES
-from src.portfolio import (all_tickers, lots_for_ticker, add_lot,
-                           update_lot, remove_lot, remove_ticker)
+import streamlit as st
+
+from src.config import COLOR, TICKER_NAMES
 from src.data.prices import lookup_buy_price
-from src.ui_helpers import section_title, color_legend, term_glossary
+from src.portfolio import (
+    add_lot,
+    all_tickers,
+    lots_for_ticker,
+    remove_lot,
+    remove_ticker,
+    update_lot,
+)
+from src.ui_helpers import color_legend, section_title, term_glossary
 
 
 def render_portfolio(portfolio, data):
@@ -38,7 +45,6 @@ def _render_pnl_table(portfolio, prices):
 
     rows_html       = ""
     grand_cost      = grand_value = grand_pnl = 0.0
-    ticker_totals   = {}  # ticker -> {cost, value, pnl, shares}
 
     for t in sorted(all_tickers(portfolio)):
         p = prices.get(t)
@@ -46,7 +52,7 @@ def _render_pnl_table(portfolio, prices):
         lot_rows  = []
         t_cost = t_value = t_pnl = t_shares = 0.0
 
-        for layer, lot in lots_for_ticker(portfolio, t):
+        for _layer, lot in lots_for_ticker(portfolio, t):
             shares = lot.get("shares", 0)
             if shares <= 0:
                 continue
@@ -58,9 +64,12 @@ def _render_pnl_table(portfolio, prices):
             pnl_pct = (pnl / cost * 100) if (pnl is not None and cost and cost > 0) else None
 
             t_shares += shares
-            if cost  is not None: t_cost  += cost
-            if value is not None: t_value += value
-            if pnl   is not None: t_pnl   += pnl
+            if cost is not None:
+                t_cost += cost
+            if value is not None:
+                t_value += value
+            if pnl is not None:
+                t_pnl += pnl
 
             bp_str    = f"${bp:.2f}"    if bp        else "—"
             cost_str  = f"${cost:.0f}"  if cost      else "—"

@@ -1,13 +1,14 @@
 """Fundamentals tab — valuation table, earnings dates, dividends, EPS trend."""
 
+import contextlib
 from datetime import date
-import pandas as pd
+
 import streamlit as st
 
-from src.config    import HE, COLOR, TICKER_NAMES
-from src.portfolio import all_tickers
+from src.config import COLOR, TICKER_NAMES
 from src.data.analysts import get_eps_trend
-from src.ui_helpers import section_title, color_legend, term_glossary
+from src.portfolio import all_tickers
+from src.ui_helpers import color_legend, section_title, term_glossary
 
 
 def render_fundamentals(portfolio, data, td_str):
@@ -182,10 +183,8 @@ def _render_eps_table(df):
     }
 
     # Normalise — yfinance may deliver columns or index in either direction
-    try:
+    with contextlib.suppress(Exception):
         df = df.rename(columns=_COL, index=_ROW)
-    except Exception:
-        pass
 
     cols = [v for v in _COL.values() if v in df.columns]
     rows = [v for v in _ROW.values() if v in df.index]

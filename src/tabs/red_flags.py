@@ -1,13 +1,10 @@
 """Red flags tab — all flags evaluated automatically against live data. No ידני."""
 
-import pandas as pd
 import streamlit as st
 
-from src.config   import HE, COLOR, FLAG_THRESHOLDS, MAJOR_FIRMS, SELL_GRADES, TICKER_NAMES
+from src.config import COLOR, FLAG_THRESHOLDS, HE, MAJOR_FIRMS, SELL_GRADES
 from src.portfolio import all_tickers, lots_for_ticker
-from src.data.prices import get_buy_price
-from src.ui_helpers import section_title, color_legend, term_glossary
-
+from src.ui_helpers import color_legend, term_glossary
 
 # ── Flag definitions ──────────────────────────────────────────────────────────
 # (ticker, flag_label, threshold_description, action)
@@ -45,7 +42,6 @@ def get_flag_summary(portfolio, data):
 
 
 def render_red_flags(portfolio, data, td_str):
-    prices     = data["prices"]
     market_closed = not data.get("_market_open", True)
 
     if market_closed:

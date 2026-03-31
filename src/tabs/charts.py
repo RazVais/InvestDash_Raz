@@ -4,10 +4,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from src.config import HE, COLOR, TICKER_NAMES
+from src.config import COLOR, HE, TICKER_NAMES
+from src.data.technicals import bollinger, compute_relative_strength, compute_rsi, sma
 from src.portfolio import all_tickers
-from src.data.technicals import sma, compute_rsi, bollinger, compute_relative_strength
-from src.ui_helpers import section_title, color_legend, term_glossary
+from src.ui_helpers import color_legend, term_glossary
 
 
 def render_charts(portfolio, data):
@@ -68,24 +68,24 @@ def render_charts(portfolio, data):
     # MAs
     if show_sma20:
         fig.add_trace(go.Scatter(x=ohlcv.index, y=sma(close, 20),
-                                  name="SMA20", line=dict(color="#AB47BC", width=1)),
+                                  name="SMA20", line={"color": "#AB47BC", "width": 1}),
                       row=1, col=1)
     if show_sma50:
         fig.add_trace(go.Scatter(x=ohlcv.index, y=sma(close, 50),
-                                  name="SMA50", line=dict(color="#42A5F5", width=1.2)),
+                                  name="SMA50", line={"color": "#42A5F5", "width": 1.2}),
                       row=1, col=1)
     if show_sma200:
         fig.add_trace(go.Scatter(x=ohlcv.index, y=sma(close, 200),
-                                  name="SMA200", line=dict(color="#FF7043", width=1.5)),
+                                  name="SMA200", line={"color": "#FF7043", "width": 1.5}),
                       row=1, col=1)
 
     # Bollinger
     if show_boll:
         mid, upper, lower = bollinger(close)
         fig.add_trace(go.Scatter(x=ohlcv.index, y=upper, name="BB Upper",
-                                  line=dict(color="#78909C", width=1, dash="dot")), row=1, col=1)
+                                  line={"color": "#78909C", "width": 1, "dash": "dot"}), row=1, col=1)
         fig.add_trace(go.Scatter(x=ohlcv.index, y=lower, name="BB Lower",
-                                  line=dict(color="#78909C", width=1, dash="dot"),
+                                  line={"color": "#78909C", "width": 1, "dash": "dot"},
                                   fill="tonexty", fillcolor="rgba(120,144,156,0.05)"), row=1, col=1)
 
     # 52w high/low lines
@@ -124,7 +124,7 @@ def render_charts(portfolio, data):
         rsi_series = compute_rsi(close)
         fig.add_trace(go.Scatter(
             x=ohlcv.index, y=rsi_series,
-            name="RSI", line=dict(color="#FF9800", width=1.2),
+            name="RSI", line={"color": "#FF9800", "width": 1.2},
         ), row=3, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="#F44336",
                       line_width=0.8, row=3, col=1)
@@ -135,14 +135,14 @@ def render_charts(portfolio, data):
     # ── Layout ───────────────────────────────────────────────────────────────
     name_str = TICKER_NAMES.get(sel, sel)
     fig.update_layout(
-        title=dict(text=f"{HE['chart_title']}{sel} — {name_str}", font_color=COLOR["text_dim"], font_size=13, x=0.5),
+        title={"text": f"{HE['chart_title']}{sel} — {name_str}", "font_color": COLOR["text_dim"], "font_size": 13, "x": 0.5},
         height=600 + (150 if show_rsi else 0),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#111111",
-        font=dict(color="#ffffff", size=10),
+        font={"color": "#ffffff", "size": 10},
         xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1.02, x=0),
-        margin=dict(t=40, b=20, l=10, r=80),
+        legend={"orientation": "h", "y": 1.02, "x": 0},
+        margin={"t": 40, "b": 20, "l": 10, "r": 80},
         hovermode="x unified",
     )
     fig.update_xaxes(
@@ -198,19 +198,19 @@ def render_charts(portfolio, data):
                 rs_fig = go.Figure(go.Scatter(
                     x=rs.index, y=rs,
                     name=HE["rel_strength"],
-                    line=dict(color=COLOR["primary"], width=1.5),
+                    line={"color": COLOR["primary"], "width": 1.5},
                     fill="tozeroy",
                     fillcolor="rgba(0,207,141,0.08)",
                 ))
                 rs_fig.add_hline(y=100, line_dash="dash", line_color="#555", line_width=0.8)
                 rs_fig.update_layout(
-                    title=dict(text=f"{HE['rel_strength']} — {sel} vs VOO",
-                               font_color=COLOR["text_dim"], font_size=12, x=0.5),
+                    title={"text": f"{HE['rel_strength']} — {sel} vs VOO",
+                           "font_color": COLOR["text_dim"], "font_size": 12, "x": 0.5},
                     height=180,
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="#111111",
-                    font=dict(color="#ffffff", size=10),
-                    margin=dict(t=30, b=10, l=10, r=10),
+                    font={"color": "#ffffff", "size": 10},
+                    margin={"t": 30, "b": 10, "l": 10, "r": 10},
                     showlegend=False,
                     hovermode="x",
                 )

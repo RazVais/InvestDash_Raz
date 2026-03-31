@@ -1,10 +1,14 @@
 """Tests for src/config.py — structural integrity checks."""
 
 from src.config import (
-    TICKERS_BY_LAYER, TICKER_NAMES, FLAG_THRESHOLDS,
-    COLOR, SUGGESTIONS, COMMODITY_SYMBOLS, LAYER_COLORS,
+    COLOR,
+    COMMODITY_SYMBOLS,
+    FLAG_THRESHOLDS,
+    LAYER_COLORS,
+    SUGGESTIONS,
+    TICKER_NAMES,
+    TICKERS_BY_LAYER,
 )
-
 
 # ── Ticker completeness ───────────────────────────────────────────────────────
 
@@ -107,6 +111,6 @@ def test_commodity_symbols_has_required_commodities():
 
 
 def test_commodity_symbols_have_ticker():
-    for name, (symbol, scale) in COMMODITY_SYMBOLS.items():
+    for name, (symbol, _scale) in COMMODITY_SYMBOLS.items():
         assert isinstance(symbol, str) and len(symbol) > 0, \
             f"COMMODITY_SYMBOLS['{name}'] has empty ticker"
