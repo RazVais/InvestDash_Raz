@@ -229,72 +229,72 @@ SUGGESTIONS = [
 ]
 
 # ── Static company briefs ─────────────────────────────────────────────────────
-# Shown in the news tab. English text — displayed LTR in the UI.
+# Shown in the news tab. Hebrew text — displayed RTL in the UI.
 TICKER_BRIEFS = {
     "VOO": (
-        "Vanguard S&P 500 ETF tracks the S&P 500 index — the 500 largest US companies by market cap. "
-        "With an expense ratio of 0.03%, it is one of the lowest-cost and most liquid equity ETFs available. "
-        "Sector exposure is dominated by Technology (~30%), Healthcare (~13%), and Financials (~13%)."
+        "קרן הסל Vanguard S&P 500 עוקבת אחרי מדד S&P 500 — 500 החברות הגדולות בארה\"ב לפי שווי שוק. "
+        "עם דמי ניהול של 0.03% בלבד, היא אחת מקרנות המניות הזולות והנזילות ביותר בעולם. "
+        "החשיפה הענפית מובלת על ידי טכנולוגיה (~30%), בריאות (~13%) ופיננסים (~13%)."
     ),
     "CCJ": (
-        "Cameco Corporation is the world's largest publicly traded uranium producer, headquartered in Saskatoon, Canada. "
-        "It operates the McArthur River/Key Lake and Cigar Lake mines — among the highest-grade uranium deposits on Earth. "
-        "Cameco also holds a 49% stake in Westinghouse Electric, a major nuclear fuel and services company, providing leverage to the nuclear renaissance."
+        "Cameco היא יצרנית האורניום הציבורית הגדולה בעולם, ומשדרת מסצ'ואן, קנדה. "
+        "היא מפעילה את מכרות McArthur River וCigar Lake — בין מרבצי האורניום באיכות הגבוהה ביותר בכדור הארץ. "
+        "Cameco מחזיקה ב-49% מ-Westinghouse Electric, ספקית דלק גרעיני ושירותים מרכזית, המעניקה לה חשיפה לתחייה הגרעינית העולמית."
     ),
     "FCX": (
-        "Freeport-McMoRan is the world's largest publicly traded copper producer, with mines across the Americas and Indonesia (Grasberg — the world's largest copper-gold mine). "
-        "The company is a direct play on the energy transition: copper demand is expected to double by 2035 driven by EVs, grid infrastructure, and data centers. "
-        "It also produces gold and molybdenum as byproducts."
+        "Freeport-McMoRan היא יצרנית הנחושת הציבורית הגדולה בעולם, עם מכרות ברחבי האמריקות ואינדונזיה (Grasberg — מכרה הנחושת-זהב הגדול בעולם). "
+        "החברה מהווה הימור ישיר על מעבר האנרגיה: הביקוש לנחושת צפוי להכפיל עצמו עד 2035 עקב כלי רכב חשמליים, תשתיות רשת ומרכזי נתונים. "
+        "בנוסף, היא מייצרת זהב ומוליבדן כתוצרי לוואי."
     ),
     "ETN": (
-        "Eaton Corporation is a diversified industrial company focused on electrical power management, hydraulics, and vehicle systems. "
-        "It is a key beneficiary of grid modernisation, electrification, and data-centre power demand. "
-        "The electrical segment (~60% of revenue) includes switchgear, circuit breakers, and UPS systems used by hyperscalers and utilities."
+        "Eaton Corporation היא חברה תעשייתית מגוונת המתמקדת בניהול חשמל, הידראוליקה ומערכות רכב. "
+        "היא נהנית ממגמות מודרניזציה של הרשת החשמלית, חשמול ועלייה בביקוש לחשמל ממרכזי נתונים. "
+        "פלח החשמל (~60% מהכנסות) כולל ציוד מיתוג, מפסקים ומערכות UPS המשמשים חברות ענן גדולות וחברות חשמל."
     ),
     "VRT": (
-        "Vertiv Holdings designs and manufactures critical digital infrastructure — thermal management, power, and IT infrastructure for data centres. "
-        "Its cooling solutions (precision air conditioning, liquid cooling) are central to AI data-centre buildouts, where GPUs generate 5–10× more heat than traditional servers. "
-        "Major customers include hyperscalers (AWS, Azure, Google) and colocation providers."
+        "Vertiv מעצבת ומייצרת תשתית דיגיטלית קריטית — ניהול חום, אספקת חשמל ותשתיות IT למרכזי נתונים. "
+        "פתרונות הקירור שלה (מיזוג אוויר מדויק, קירור נוזלי) הם מרכזיים לבנייה של מרכזי נתונים לבינה מלאכותית, שבהם GPU מייצרים פי 5-10 יותר חום משרתים רגילים. "
+        "לקוחות מרכזיים כוללים את AWS, Azure, Google ומפעילי מרכזי מיקום-משותף."
     ),
     "AMD": (
-        "Advanced Micro Devices designs CPUs (EPYC for servers, Ryzen for desktops) and GPUs (Instinct MI series for AI/HPC workloads). "
-        "Its MI300X GPU is the primary competition to NVIDIA's H100/H200 in AI training and inference. "
-        "AMD also supplies custom silicon (CDNA) to Microsoft Azure and Meta for AI accelerators."
+        "Advanced Micro Devices מעצבת מעבדים (EPYC לשרתים, Ryzen למחשבים אישיים) ומעבדי גרפיקה (סדרת Instinct MI לעומסי AI ו-HPC). "
+        "ה-GPU MI300X הוא התחרות העיקרית ל-H100/H200 של NVIDIA באימון ובהסקת בינה מלאכותית. "
+        "AMD גם מספקת שבבים מותאמים אישית (CDNA) ל-Microsoft Azure ול-Meta עבור מאיצי AI."
     ),
     "AMZN": (
-        "Amazon is the world's largest e-commerce marketplace and the leading cloud provider through AWS (~33% cloud market share). "
-        "AWS generates the majority of Amazon's operating income and powers AI services including Bedrock, SageMaker, and Trainium/Inferentia chips. "
-        "Amazon also operates the world's largest logistics network and a fast-growing advertising business."
+        "Amazon היא שוק המסחר האלקטרוני הגדול בעולם וספקית הענן המובילה דרך AWS (~33% נתח שוק ענן). "
+        "AWS מייצרת את רוב ההכנסה התפעולית של Amazon ומפעילה שירותי AI כולל Bedrock, SageMaker ושבבי Trainium/Inferentia. "
+        "Amazon מפעילה גם את רשת הלוגיסטיקה הגדולה בעולם ועסק פרסום דיגיטלי הצומח במהירות."
     ),
     "GOOGL": (
-        "Alphabet (Google) operates the world's dominant search engine (~90% market share), YouTube, and Google Cloud Platform (GCP). "
-        "Google Cloud is the third-largest cloud provider and is growing faster than AWS/Azure. "
-        "DeepMind and Google Brain are Alphabet's AI research arms; Gemini is its flagship AI model competing with OpenAI's GPT series."
+        "Alphabet (Google) מפעילה את מנוע החיפוש הדומיננטי בעולם (~90% נתח שוק), YouTube ו-Google Cloud Platform (GCP). "
+        "Google Cloud היא ספקית הענן השלישית בגודלה וצומחת מהר יותר מ-AWS ו-Azure. "
+        "DeepMind ו-Google Brain הם זרועות מחקר ה-AI של Alphabet; Gemini הוא מודל ה-AI הדגל המתחרה בסדרת GPT של OpenAI."
     ),
     "CRWD": (
-        "CrowdStrike provides cloud-native cybersecurity through its Falcon platform, which uses AI to detect and prevent threats across endpoints, cloud, and identity. "
-        "Its agent is installed on ~24,000 customers' systems, generating a proprietary threat-intelligence graph that improves with scale. "
-        "CrowdStrike is the market leader in EDR (Endpoint Detection & Response) with a growing platform consolidation strategy."
+        "CrowdStrike מספקת אבטחת סייבר מבוססת ענן דרך פלטפורמת Falcon, המשתמשת ב-AI לזיהוי ומניעת איומים על נקודות קצה, ענן וזהות. "
+        "הסוכן שלה מותקן על מערכות כ-24,000 לקוחות, ומייצר גרף מודיעין איומים קנייני המשתפר עם הגדלה. "
+        "CrowdStrike היא מובילת השוק ב-EDR (זיהוי ותגובה בנקודות קצה) עם אסטרטגיה גוברת של איחוד פלטפורמה."
     ),
     "ESLT": (
-        "Elbit Systems is Israel's largest defense electronics company, listed on both NASDAQ and the Tel Aviv Stock Exchange. "
-        "It supplies military systems (UAVs, electro-optics, C4I, artillery) to over 100 countries, including NATO members and Israel's IDF. "
-        "The ongoing geopolitical environment and global defence spending increases are structural tailwinds for Elbit's order book."
+        "אלביט מערכות היא חברת האלקטרוניקה הביטחונית הגדולה ביותר בישראל, הנסחרת הן בנאסד\"ק והן בבורסה בתל אביב. "
+        "היא מספקת מערכות צבאיות (כלי טיס בלתי מאוישים, אלקטרו-אופטיקה, C4I, ארטילריה) ליותר מ-100 מדינות, כולל חברות נאט\"ו וצה\"ל. "
+        "הסביבה הגיאופוליטית הנוכחית והגידול בהוצאות ביטחוניות עולמיות מהוות רוחות גב מבניות לספר ההזמנות של אלביט."
     ),
     "TEVA": (
-        "Teva Pharmaceutical is the world's largest generic drug manufacturer, headquartered in Tel Aviv. "
-        "Its branded portfolio includes Austedo (tardive dyskinesia) and Ajovy (migraines), with Austedo growing rapidly. "
-        "Teva completed a major debt-restructuring cycle and is executing a 'Pivot to Growth' strategy focused on complex generics and innovative medicines."
+        "טבע פארמצבטיקה היא יצרנית התרופות הגנריות הגדולה בעולם, ומשדרת בתל אביב. "
+        "תיק המוצרים הממותגים שלה כולל את Austedo (דיסקינזיה עיכובית) ו-Ajovy (מיגרנות), כאשר Austedo צומח במהירות. "
+        "טבע השלימה מחזור גדול של ארגון מחדש של חובות ומבצעת אסטרטגיית 'Pivot to Growth' המתמקדת בתרופות גנריות מורכבות ותרופות חדשניות."
     ),
     "EQX": (
-        "Equinox Gold is a Canadian gold producer with 10 operating mines across the Americas, producing ~700k oz/year. "
-        "It is a leveraged gold play — revenues are highly sensitive to the gold price, which benefits from inflation, dollar weakness, and risk-off sentiment. "
-        "Equinox's Greenstone mine in Ontario ramped up in 2024 and is expected to become one of Canada's largest gold mines."
+        "Equinox Gold היא יצרנית זהב קנדית עם 10 מכרות פעילים ברחבי האמריקות, המייצרת כ-700 אלף אונקיות לשנה. "
+        "היא הימור ממונף על זהב — ההכנסות רגישות מאוד למחיר הזהב, הנהנה מאינפלציה, חולשת דולר ותיאבון סיכון נמוך. "
+        "מכרה Greenstone של Equinox באונטריו החל לפעול ב-2024 וצפוי להפוך לאחד ממכרות הזהב הגדולים בקנדה."
     ),
     "AGX": (
-        "Argan Inc. is a holding company whose primary subsidiary Gemma Power Systems builds natural gas and renewable power plants under fixed-price EPC (Engineering, Procurement, Construction) contracts. "
-        "It benefits from the US energy infrastructure buildout driven by data-centre power demand and grid modernisation. "
-        "Argan carries no debt and maintains a significant cash position relative to its market cap."
+        "Argan Inc. היא חברת אחזקות שחברת הבת העיקרית שלה, Gemma Power Systems, בונה תחנות כוח גז טבעי ואנרגיה מתחדשת בחוזי EPC במחיר קבוע. "
+        "היא נהנית מהרחבת תשתיות האנרגיה האמריקאית המונעת על ידי ביקוש חשמלי ממרכזי נתונים ומודרניזציה של הרשת. "
+        "Argan אינה נושאת בחוב ומחזיקה ביתרת מזומנים משמעותית ביחס לשווי השוק שלה."
     ),
 }
 

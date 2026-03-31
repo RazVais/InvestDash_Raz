@@ -268,9 +268,11 @@ def main():
     _log.info("Dashboard starting", extra={"trading_day": td_str, "market_open": market_open})
 
     try:
-        api_key = st.secrets.get("FINNHUB_API_KEY", "")
+        api_key        = st.secrets.get("FINNHUB_API_KEY", "")
+        claude_api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     except Exception:
-        api_key = ""
+        api_key        = ""
+        claude_api_key = ""
 
     data = load_all_data(portfolio, market_state, api_key)
 
@@ -315,7 +317,7 @@ def main():
     elif active == "דגלים אדומים":
         render_red_flags(portfolio, data, td_str)
     elif active == "חדשות":
-        render_news(portfolio, data, td_str)
+        render_news(portfolio, data, td_str, claude_api_key)
     elif active == "💡 המלצות":
         render_suggestions(portfolio, data, td_str, api_key)
 

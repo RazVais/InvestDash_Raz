@@ -1,13 +1,13 @@
 """News fetcher — Yahoo Finance RSS (no auth, no rate-limit issues)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import email.utils
 import xml.etree.ElementTree as ET
 
 import requests
 import streamlit as st
 
-from src.config import TICKER_BRIEFS
+from src.config import TICKER_BRIEFS, TICKER_NAMES
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -75,6 +75,44 @@ def get_news(tickers, trading_day, max_per=6):
         _log.info("get_news", extra={"ticker": t})
         result[t] = _fetch_rss(t, n=max_per)
     return result
+
+
+@st.cache_data(ttl=3600)
+def get_today_summary(ticker: str, articles: list, trading_day: str, claude_api_key: str) -> str:
+    """
+    Use Claude API to summarize today's most important news for `ticker` in Hebrew.
+    Returns a Hebrew summary string, or "" if no key / no today's articles.
+    trading_day is used as cache key only.
+    """
+    if not claude_api_key:
+        return ""
+
+    # Filter to articles from the last 24 hours
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    recent = [a for a in articles if a.get("published") and a["published"] >= cutoff]
+    if not recent:
+        return ""
+
+    try:
+        import anthropic  # lazy import — only required if key is present
+        name = TICKER_NAMES.get(ticker, ticker)
+        titles = "\n".join(f"- {a['title']}" for a in recent[:8])
+        prompt = (
+            f"אתה אנליסט פיננסי. להלן כותרות החדשות מ-24 השעות האחרונות עבור {name} ({ticker}):\n\n"
+            f"{titles}\n\n"
+            f"כתוב סיכום תמציתי בעברית (2-3 משפטים) של ההתפתחויות המשמעותיות ביותר. "
+            f"התמקד בנושאים פיננסיים ועסקיים. היה ישיר וענייני."
+        )
+        client = anthropic.Anthropic(api_key=claude_api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
+    except Exception:
+        _log.warning("get_today_summary failed", exc_info=True, extra={"ticker": ticker})
+        return ""
 
 
 @st.cache_data(ttl=3600)
