@@ -1,5 +1,6 @@
 """News fetcher — Yahoo Finance RSS (no auth, no rate-limit issues)."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import email.utils
 import xml.etree.ElementTree as ET
@@ -67,14 +68,17 @@ def _fetch_rss(ticker: str, n: int = 6) -> list:
         return []
 
 
+def _fetch_one_news(args):
+    t, n = args
+    _log.info("get_news", extra={"ticker": t})
+    return t, _fetch_rss(t, n=n)
+
+
 @st.cache_data(ttl=1800)
 def get_news(tickers, trading_day, max_per=6):
-    """Fetch up to max_per news articles per ticker via Yahoo RSS."""
-    result = {}
-    for t in tickers:
-        _log.info("get_news", extra={"ticker": t})
-        result[t] = _fetch_rss(t, n=max_per)
-    return result
+    """Fetch up to max_per news articles per ticker via Yahoo RSS — parallel."""
+    with ThreadPoolExecutor(max_workers=min(len(tickers), 8)) as ex:
+        return dict(ex.map(_fetch_one_news, [(t, max_per) for t in tickers]))
 
 
 @st.cache_data(ttl=3600)

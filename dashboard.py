@@ -274,7 +274,8 @@ def main():
         api_key        = ""
         claude_api_key = ""
 
-    data = load_all_data(portfolio, market_state, api_key)
+    active = st.session_state.get("active_tab", _TABS[0])
+    data = load_all_data(portfolio, market_state, api_key, active_tab=active)
 
     _render_sidebar(portfolio, data, market_state)
 
@@ -301,9 +302,27 @@ def main():
     # ── Navigation (state-preserving tab bar) ─────────────────────────────
     _render_nav_tabs()
 
-    # ── Tab content ───────────────────────────────────────────────────────
-    active = st.session_state.get("active_tab", _TABS[0])
+    # ── Deferred-data banner ──────────────────────────────────────────────
+    _TAB_SLOW = {
+        "פונדמנטלס":    {"fundamentals", "earnings"},
+        "חדשות":         {"news"},
+        "אנליסטים":      {"targets", "upgrades"},
+        "דגלים אדומים":  {"upgrades", "commodities"},
+        "סקירה":         {"targets"},
+        "גרפים":         {"targets"},
+    }
+    _deferred    = data.get("_deferred", frozenset())
+    _tab_missing = _TAB_SLOW.get(active, set()) & _deferred
+    if _tab_missing:
+        col_msg, col_btn = st.columns([6, 1])
+        with col_msg:
+            st.caption("📡 חלק מהנתונים עדיין בטעינת רקע — לחץ רענן לעדכון מיידי")
+        with col_btn:
+            if st.button("🔄", key="_bg_refresh", help="רענן נתוני רקע"):
+                st.cache_data.clear()
+                st.rerun()
 
+    # ── Tab content ───────────────────────────────────────────────────────
     if active == "סקירה":
         render_overview(portfolio, data, market_state, td_str)
     elif active == "תיק שלי":

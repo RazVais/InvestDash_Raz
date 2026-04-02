@@ -15,7 +15,8 @@ Israeli stocks note (ESLT):
   is the most reliable programmatic source available.
 """
 
-import time
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pandas as pd
 import requests as _req
@@ -25,6 +26,9 @@ import yfinance as yf
 from src.logger import get_logger
 
 _log = get_logger(__name__)
+
+# Limit concurrent yfinance .info calls — they share a rate-limit pool
+_YF_INFO_SEM = threading.Semaphore(3)
 
 _YF_HEADERS = {
     "User-Agent": (
@@ -155,48 +159,28 @@ def _ohlcv_for_ticker(ticker):
     return None, "none"
 
 
-# ── Main cached fetcher ────────────────────────────────────────────────────────
+# ── Per-ticker worker (runs in thread pool) ───────────────────────────────────
 
-@st.cache_data(ttl=1800)
-def get_stock_data(tickers, trading_day):
-    """
-    Fetch 1-year OHLCV + metadata for all tickers.
-    Uses Yahoo Finance v8 REST API as primary (bypasses yfinance library rate limits),
-    with yfinance Ticker.history() as fallback.
+def _process_one_ticker(t):
+    """Fetch OHLCV + beta/div_yield for a single ticker. Thread-safe."""
+    try:
+        df, source = _ohlcv_for_ticker(t)
+        if df is None or df.empty:
+            _log.warning("All price sources failed", extra={"ticker": t})
+            return t, None, "no data"
 
-    Returns dict: {ticker: {price, change, beta, div_yield, ohlcv, high_52w, low_52w, history}}
-    """
-    result = {}
-    errors = {}
-    _log.info("get_stock_data start",
-              extra={"tickers": list(tickers), "trading_day": trading_day})
+        close  = df["Close"].dropna()
+        open_  = df["Open"].dropna()   if "Open"   in df.columns else close
+        high   = df["High"].dropna()   if "High"   in df.columns else close
+        low    = df["Low"].dropna()    if "Low"    in df.columns else close
+        volume = df["Volume"].dropna() if "Volume" in df.columns else pd.Series(dtype=float)
 
-    if not tickers:
-        return result
+        price = float(close.iloc[-1])
+        prev  = float(close.iloc[-2]) if len(close) > 1 else price
 
-    for t in tickers:
-        try:
-            df, source = _ohlcv_for_ticker(t)
-
-            if df is None or df.empty:
-                _log.warning("All price sources failed", extra={"ticker": t})
-                errors[t] = "no data"
-                result[t] = None
-                continue
-
-            close  = df["Close"].dropna()
-            open_  = df["Open"].dropna()  if "Open"   in df.columns else close
-            high   = df["High"].dropna()  if "High"   in df.columns else close
-            low    = df["Low"].dropna()   if "Low"    in df.columns else close
-            volume = df["Volume"].dropna() if "Volume" in df.columns else pd.Series(dtype=float)
-
-            price = float(close.iloc[-1])
-            prev  = float(close.iloc[-2]) if len(close) > 1 else price
-
-            # Beta + dividend yield from yfinance .info
-            # (single lightweight call per ticker, different endpoint from history)
-            beta      = 1.0
-            div_yield = 0.0
+        # Beta + dividend yield — semaphore caps concurrent yfinance .info calls
+        beta, div_yield = 1.0, 0.0
+        with _YF_INFO_SEM:
             try:
                 info = yf.Ticker(t).info
                 beta = float(info.get("beta") or 1.0)
@@ -210,34 +194,49 @@ def get_stock_data(tickers, trading_day):
             except Exception:
                 _log.warning("ticker .info unavailable", extra={"ticker": t})
 
-            ohlcv = pd.DataFrame({
-                "Open":   open_,
-                "High":   high,
-                "Low":    low,
-                "Close":  close,
-                "Volume": volume,
-            }).dropna(subset=["Close"])
+        ohlcv = pd.DataFrame({
+            "Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume,
+        }).dropna(subset=["Close"])
 
-            result[t] = {
-                "price":     price,
-                "change":    ((price - prev) / prev * 100) if prev else 0.0,
-                "beta":      beta,
-                "div_yield": div_yield,
-                "ohlcv":     ohlcv,
-                "high_52w":  float(close.max()),
-                "low_52w":   float(close.min()),
-                "history":   close,
-            }
-            _log.info("Fetched OHLCV", extra={"ticker": t, "source": source,
-                                               "rows": len(ohlcv), "price": price})
-            time.sleep(0.1)   # polite gap between tickers
+        _log.info("Fetched OHLCV", extra={"ticker": t, "source": source,
+                                           "rows": len(ohlcv), "price": price})
+        return t, {
+            "price":     price,
+            "change":    ((price - prev) / prev * 100) if prev else 0.0,
+            "beta":      beta,
+            "div_yield": div_yield,
+            "ohlcv":     ohlcv,
+            "high_52w":  float(close.max()),
+            "low_52w":   float(close.min()),
+            "history":   close,
+        }, ""
+    except Exception:
+        _log.error("Ticker processing error", exc_info=True, extra={"ticker": t})
+        return t, None, "error"
 
-        except Exception:
-            _log.error("Ticker processing error", exc_info=True, extra={"ticker": t})
-            errors[t] = "error"
-            result[t] = None
 
-    ok = len([v for v in result.values() if v is not None])
+# ── Main cached fetcher ────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=1800)
+def get_stock_data(tickers, trading_day):
+    """
+    Fetch 1-year OHLCV + metadata for all tickers in parallel.
+    Uses Yahoo Finance v8 REST API as primary, yfinance as fallback.
+    Returns dict: {ticker: {price, change, beta, div_yield, ohlcv, high_52w, low_52w, history}}
+    """
+    _log.info("get_stock_data start",
+              extra={"tickers": list(tickers), "trading_day": trading_day})
+    if not tickers:
+        return {}
+
+    result, errors = {}, {}
+    with ThreadPoolExecutor(max_workers=min(len(tickers), 8)) as ex:
+        for t, data, err in ex.map(_process_one_ticker, tickers):
+            result[t] = data
+            if err:
+                errors[t] = err
+
+    ok = sum(1 for v in result.values() if v is not None)
     _log.info("get_stock_data done", extra={"ok": ok, "errors": len(errors)})
     result["__errors__"] = errors
     return result

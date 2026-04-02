@@ -1,4 +1,16 @@
-"""Central data loader — orchestrates all fetchers and returns a single data dict."""
+"""Central data loader — two-tier parallel loading with background cache warming.
+
+Tier 1 (immediate, parallel):
+  Keys required by the active tab + sidebar — fetched together in a ThreadPoolExecutor
+  and returned before the tab renders.
+
+Tier 2 (deferred, background):
+  Remaining keys are warmed in a daemon thread so that when the user navigates to
+  another tab the data is already in @st.cache_data and renders instantly.
+"""
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import streamlit as st
 
@@ -17,67 +29,124 @@ from src.portfolio import all_tickers
 
 _log = get_logger(__name__)
 
+# ── Tab → data dependency map ─────────────────────────────────────────────────
+_TAB_NEEDS = {
+    "סקירה":        frozenset(["prices", "targets", "consensus", "macro"]),
+    "תיק שלי":      frozenset(["prices"]),
+    "גרפים":        frozenset(["prices", "targets"]),
+    "אנליסטים":     frozenset(["prices", "consensus", "targets", "upgrades"]),
+    "פונדמנטלס":   frozenset(["prices", "fundamentals", "earnings"]),
+    "דגלים אדומים": frozenset(["prices", "consensus", "upgrades", "commodities"]),
+    "חדשות":        frozenset(["news"]),
+    "💡 המלצות":    frozenset(["prices", "targets", "consensus"]),
+}
 
-def load_all_data(portfolio, market_state, api_key=""):
+# Keys the sidebar always needs (flag summary + macro strip)
+_SIDEBAR_NEEDS = frozenset(["prices", "consensus", "upgrades", "commodities", "macro"])
+
+_ALL_KEYS = frozenset([
+    "prices", "targets", "consensus", "upgrades",
+    "earnings", "fundamentals", "macro", "commodities", "news",
+])
+
+# Empty defaults returned for keys not yet loaded
+_EMPTY: dict = {
+    "prices":       {},
+    "targets":      {},
+    "consensus":    {},
+    "upgrades":     {},
+    "fundamentals": {},
+    "earnings":     {},
+    "macro":        {"vix": None, "yield_10y": None, "dxy": None},
+    "commodities":  {"gold": None, "copper": None, "uranium": None},
+    "news":         {},
+}
+
+# Module-level event so background warming survives Streamlit reruns
+_bg_done = threading.Event()
+_bg_done.set()  # "idle" at startup
+
+
+# ── Fetcher dispatcher ────────────────────────────────────────────────────────
+
+def _call_fetcher(name, tickers, td, api_key):
+    """Run one fetcher by name; returns (name, result)."""
+    try:
+        if name == "prices":
+            return name, get_stock_data(tickers, td)
+        if name == "targets":
+            return name, get_analyst_targets(tickers, td)
+        if name == "consensus":
+            return name, get_consensus(tickers, td, api_key)
+        if name == "upgrades":
+            return name, get_upgrades_downgrades(tickers, td)
+        if name == "earnings":
+            return name, get_earnings_dates(tickers, td)
+        if name == "fundamentals":
+            res = get_finviz_fundamentals(tickers, td) if FINVIZ_AVAILABLE else {}
+            return name, res
+        if name == "macro":
+            return name, get_macro_indicators(td)
+        if name == "commodities":
+            return name, get_commodity_prices(td)
+        if name == "news":
+            return name, get_news(tickers, td)
+    except Exception:
+        _log.error("Fetcher error", exc_info=True, extra={"name": name})
+    return name, _EMPTY.get(name, {})
+
+
+def _warm_background(names, tickers, td, api_key):
+    """Daemon thread: pre-warm @st.cache_data for deferred keys."""
+    _log.info("Background warming started", extra={"keys": sorted(names)})
+    for name in names:
+        _call_fetcher(name, tickers, td, api_key)
+    _bg_done.set()
+    _log.info("Background warming complete")
+
+
+# ── Public entry point ────────────────────────────────────────────────────────
+
+def load_all_data(portfolio, market_state, api_key="", active_tab="סקירה"):
     """
-    Fetch all data sources and return a unified dict.
-    trading_day is used as cache key — market-closed state serves cached data.
+    Fetch data for the active tab immediately (parallel), then warm the
+    remaining keys in a background daemon thread.
 
-    Returns:
-      data["prices"]       {ticker: {price, change, beta, div_yield, ohlcv, high_52w, low_52w, history}}
-      data["targets"]      {ticker: {mean, low, high, median, count}}
-      data["consensus"]    {ticker: {strong_buy, buy, hold, sell, strong_sell, total, label}}
-      data["upgrades"]     {ticker: DataFrame}
-      data["fundamentals"] {ticker: {pe, forward_pe, ...}}
-      data["earnings"]     {ticker: next_earnings_date or None}
-      data["macro"]        {vix, yield_10y, dxy}
-      data["commodities"]  {gold, copper, uranium}
-      data["news"]         {ticker: [articles]}
+    Returns a data dict with defaults for any deferred keys.
+    data["_deferred"] = frozenset of keys not yet loaded this call.
     """
     tickers = tuple(sorted(all_tickers(portfolio)))
     td      = str(market_state["last_trading_day"])
-    _log.info("load_all_data start", extra={"ticker_count": len(tickers), "tickers": list(tickers), "trading_day": td})
 
-    with st.spinner("טוען מחירים והיסטוריה..."):
-        prices = get_stock_data(tickers, td)
+    _log.info("load_all_data", extra={
+        "tickers": list(tickers), "trading_day": td, "tab": active_tab,
+    })
 
-    with st.spinner("טוען יעדי אנליסטים..."):
-        targets = get_analyst_targets(tickers, td)
+    # Keys to load right now
+    needed   = (_TAB_NEEDS.get(active_tab, frozenset()) | _SIDEBAR_NEEDS) & _ALL_KEYS
+    deferred = _ALL_KEYS - needed
 
-    with st.spinner("טוען קונצנזוס אנליסטים..."):
-        consensus = get_consensus(tickers, td, api_key)
+    data = dict(_EMPTY)
 
-    with st.spinner("טוען שדרוגים/שינמוכים..."):
-        upgrades = get_upgrades_downgrades(tickers, td)
+    if tickers:
+        with st.spinner("טוען נתונים..."), ThreadPoolExecutor(max_workers=min(len(needed), 8)) as ex:
+            futures = {
+                ex.submit(_call_fetcher, name, tickers, td, api_key): name
+                for name in needed
+            }
+            for fut in as_completed(futures):
+                name, result = fut.result()
+                data[name] = result
 
-    with st.spinner("טוען תאריכי דוחות..."):
-        earnings = get_earnings_dates(tickers, td)
+        # Start background warming only when idle (avoid stacking threads)
+        if deferred and _bg_done.is_set():
+            _bg_done.clear()
+            threading.Thread(
+                target=_warm_background,
+                args=(list(deferred), tickers, td, api_key),
+                daemon=True,
+            ).start()
 
-    if FINVIZ_AVAILABLE:
-        with st.spinner("טוען פונדמנטלס (~10s)..."):
-            fundamentals = get_finviz_fundamentals(tickers, td)
-    else:
-        fundamentals = {t: {} for t in tickers}
-
-    with st.spinner("טוען מאקרו..."):
-        macro = get_macro_indicators(td)
-
-    with st.spinner("טוען סחורות..."):
-        commodities = get_commodity_prices(td)
-
-    with st.spinner("טוען חדשות..."):
-        news = get_news(tickers, td)
-
-    _log.info("load_all_data complete", extra={"ticker_count": len(tickers), "trading_day": td})
-    return {
-        "prices":        prices,
-        "targets":       targets,
-        "consensus":     consensus,
-        "upgrades":      upgrades,
-        "earnings":      earnings,
-        "fundamentals":  fundamentals,
-        "macro":         macro,
-        "commodities":   commodities,
-        "news":          news,
-        "_market_open":  market_state.get("is_open", False),
-    }
+    data["_market_open"] = market_state.get("is_open", False)
+    data["_deferred"]    = deferred
+    return data
