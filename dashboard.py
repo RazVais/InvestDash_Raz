@@ -29,11 +29,14 @@ from src.tabs.fundamentals_tab import render_fundamentals
 from src.tabs.red_flags        import render_red_flags
 from src.tabs.news_tab         import render_news
 from src.tabs.suggestions_tab  import render_suggestions
+from src.tabs.daily_brief_tab  import render_daily_brief
+from src.tabs.analysis_tab     import render_analysis
 
 _log = get_logger(__name__)
 
 _TABS = ["סקירה", "תיק שלי", "גרפים", "אנליסטים",
-         "פונדמנטלס", "דגלים אדומים", "חדשות", "💡 המלצות"]
+         "פונדמנטלס", "דגלים אדומים", "חדשות", "💡 המלצות",
+         "📋 יומי", "🔬 ניתוח"]
 
 # ── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -461,6 +464,10 @@ def main():
         render_news(portfolio, data, td_str, claude_api_key)
     elif active == "💡 המלצות":
         render_suggestions(portfolio, data, td_str, api_key)
+    elif active == "📋 יומי":
+        render_daily_brief(portfolio, data, td_str, claude_api_key)
+    elif active == "🔬 ניתוח":
+        render_analysis(portfolio, data, td_str, api_key, claude_api_key)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,8 @@ _TAB_NEEDS = {
     "דגלים אדומים": frozenset(["prices", "consensus", "upgrades", "commodities"]),
     "חדשות":        frozenset(["news"]),
     "💡 המלצות":    frozenset(["prices", "targets", "consensus"]),
+    "📋 יומי":      frozenset(["prices", "consensus", "targets", "upgrades"]),
+    "🔬 ניתוח":     frozenset(["prices"]),
 }
 
 # Keys the sidebar always needs (flag summary + macro strip)
