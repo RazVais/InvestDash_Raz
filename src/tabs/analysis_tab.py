@@ -1,11 +1,15 @@
-"""Analysis tab — 5-Filter Investment Evaluation System for stocks not yet in portfolio."""
+"""Analysis tab — 5-Filter Investment Evaluation for stocks not in portfolio.
+
+Automatically evaluates every ticker from SUGGESTIONS that the user hasn't bought yet,
+plus a custom-ticker search box for any other stock.
+"""
 
 import json as _json
 from typing import Optional
 
 import streamlit as st
 
-from src.config import COLOR, TICKER_NAMES
+from src.config import COLOR, SUGGESTIONS, TICKER_NAMES
 from src.data.analysts import get_analyst_targets, get_consensus
 from src.data.fundamentals import FINVIZ_AVAILABLE, get_finviz_fundamentals
 from src.data.prices import get_stock_data
@@ -27,7 +31,7 @@ _RATING_LABELS = {1: "גרוע 🔴", 2: "חלש 🟠", 3: "בינוני 🟡", 
 _RATING_TEXT_COLORS = {1: "#fff", 2: "#fff", 3: "#000", 4: "#000", 5: "#000"}
 
 
-# ── Claude evaluation ─────────────────────────────────────────────────────────
+# ── Claude evaluation (cached per ticker+day) ─────────────────────────────────
 
 @st.cache_data(ttl=3600)
 def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_api_key: str) -> dict:
@@ -60,7 +64,7 @@ def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_ap
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = msg.content[0].text.strip()
+        text  = msg.content[0].text.strip()
         start = text.find("{")
         end   = text.rfind("}") + 1
         if start >= 0 and end > start:
@@ -70,7 +74,7 @@ def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_ap
     return {}
 
 
-# ── Data summary builder ──────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _build_data_summary(
     ticker: str,
@@ -105,10 +109,7 @@ def _build_data_summary(
     return "\n".join(lines)
 
 
-# ── UI helpers ────────────────────────────────────────────────────────────────
-
 def _stars_html(rating: int) -> str:
-    """Return gold/dim star string for rating 0-5."""
     filled = max(0, min(5, rating))
     return (
         '<span style="color:#FFD700;font-size:18px">' + "★" * filled + "</span>"
@@ -117,15 +118,15 @@ def _stars_html(rating: int) -> str:
 
 
 def _filter_card_html(filter_name: str, icon: str, rating: int, explanation: str) -> str:
-    stars     = _stars_html(rating)
-    bg        = _RATING_COLORS.get(rating, "#444")
-    txt       = _RATING_TEXT_COLORS.get(rating, "#fff")
-    lbl       = _RATING_LABELS.get(rating, "—")
+    stars = _stars_html(rating)
+    bg    = _RATING_COLORS.get(rating, "#444")
+    txt   = _RATING_TEXT_COLORS.get(rating, "#fff")
+    lbl   = _RATING_LABELS.get(rating, "—")
     return (
         f'<div dir="rtl" style="background:#1a1f2e;border:1px solid #1f2937;'
-        f'border-radius:10px;padding:14px 18px;margin-bottom:10px;height:100%">'
+        f'border-radius:10px;padding:14px 18px;margin-bottom:10px">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-        f'<span style="font-size:14px;font-weight:700;color:{COLOR["primary"]}">{icon} {filter_name}</span>'
+        f'<span style="font-size:13px;font-weight:700;color:{COLOR["primary"]}">{icon} {filter_name}</span>'
         f'{stars}'
         f'</div>'
         f'<div style="display:inline-block;background:{bg};color:{txt};border-radius:12px;'
@@ -135,213 +136,244 @@ def _filter_card_html(filter_name: str, icon: str, rating: int, explanation: str
     )
 
 
-def _no_key_explanation() -> str:
+def _score_badge(total: int) -> str:
+    if total < 10:
+        verdict, color = "לא מומלץ", COLOR["negative"]
+    elif total < 15:
+        verdict, color = "ניטרלי", COLOR["warning"]
+    elif total < 20:
+        verdict, color = "מעניין", COLOR["primary"]
+    elif total < 23:
+        verdict, color = "חזק", COLOR["positive"]
+    else:
+        verdict, color = "חזק מאוד 🌟", COLOR["positive"]
     return (
-        f'<span style="color:{COLOR["text_dim"]};font-size:12px">'
-        f'הוסף ANTHROPIC_API_KEY לקובץ .streamlit/secrets.toml לקבלת ניתוח AI.</span>'
+        f'<span style="background:{color}22;color:{color};border:1px solid {color}44;'
+        f'border-radius:20px;padding:2px 14px;font-size:13px;font-weight:700;'
+        f'white-space:nowrap">{total}/25 — {verdict}</span>'
     )
+
+
+def _render_ticker_section(
+    ticker: str,
+    name: str,
+    theme: str,
+    p: Optional[dict],
+    con: Optional[dict],
+    tgt: Optional[dict],
+    fun: Optional[dict],
+    td_str: str,
+    claude_api_key: str,
+    expanded: bool = False,
+):
+    """Render one ticker's full 5-filter evaluation inside an expander."""
+    # Quick header line for the expander label
+    price_str  = f"${p['price']:.2f}" if p else "—"
+    label      = (con or {}).get("label", "N/A")
+    upside_str = "—"
+    if p and tgt and tgt.get("mean") and p.get("price"):
+        up         = (tgt["mean"] - p["price"]) / p["price"] * 100
+        upside_str = f"{up:+.1f}%"
+
+    expander_label = f"{ticker} — {name}  |  {price_str}  |  {label}  |  אפסייד {upside_str}"
+
+    with st.expander(expander_label, expanded=expanded):
+        # Theme badge + stats row
+        price_color  = COLOR["positive"] if (p or {}).get("change", 0) >= 0 else COLOR["negative"]
+        change_str   = f"{p['change']:+.2f}%" if p and p.get("change") is not None else "—"
+        label_color  = (
+            COLOR["positive"] if "Buy" in label else
+            COLOR["negative"] if "Sell" in label else
+            COLOR["neutral"]
+        )
+        upside_color = COLOR["positive"] if upside_str.startswith("+") else (
+            COLOR["negative"] if upside_str.startswith("-") else COLOR["text_dim"]
+        )
+
+        st.markdown(
+            f'<div dir="rtl" style="display:flex;gap:16px;flex-wrap:wrap;'
+            f'align-items:center;margin-bottom:12px">'
+            f'<span style="background:#00cf8d22;color:{COLOR["primary"]};border-radius:20px;'
+            f'padding:2px 12px;font-size:11px">{theme}</span>'
+            + (
+                f'<span style="font-size:13px;font-weight:700">{price_str} '
+                f'<span style="color:{price_color}">{change_str}</span></span>'
+                if p else ""
+            )
+            + f'<span style="font-size:12px;color:{COLOR["text_dim"]}">קונצנזוס: '
+            f'<b style="color:{label_color}">{label}</b></span>'
+            + (
+                f'<span style="font-size:12px;color:{COLOR["text_dim"]}">אפסייד: '
+                f'<b style="color:{upside_color}">{upside_str}</b></span>'
+                if upside_str != "—" else ""
+            )
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Claude eval
+        eval_result: dict = {}
+        if claude_api_key:
+            data_summary = _build_data_summary(ticker, p, con, tgt, fun)
+            eval_result  = _run_five_filter_eval(ticker, data_summary, td_str, claude_api_key)
+        elif not claude_api_key:
+            st.caption("הוסף ANTHROPIC_API_KEY לקובץ .streamlit/secrets.toml לקבלת ניתוח AI.")
+
+        # 5 filter cards (2-column pairs)
+        total_score = 0
+        for i in range(0, len(_FILTERS), 2):
+            pair = _FILTERS[i: i + 2]
+            cols = st.columns(len(pair))
+            for col, (fkey, fname, ficon) in zip(cols, pair):
+                fdata   = eval_result.get(fkey, {})
+                rating  = int(fdata.get("rating", 0)) if fdata else 0
+                expl    = fdata.get("explanation", "") if fdata else ""
+                if not expl and not claude_api_key:
+                    expl = (
+                        f'<span style="color:{COLOR["text_dim"]};font-size:12px">'
+                        f'הוסף ANTHROPIC_API_KEY לניתוח AI.</span>'
+                    )
+                total_score += rating
+                with col:
+                    st.markdown(_filter_card_html(fname, ficon, rating, expl),
+                                unsafe_allow_html=True)
+
+        # Score
+        if eval_result:
+            score_pct = int(total_score / 25 * 100)
+            st.markdown(
+                f'<div dir="rtl" style="display:flex;align-items:center;gap:12px;'
+                f'margin-top:4px;margin-bottom:2px">'
+                f'<span style="font-size:12px;color:{COLOR["text_dim"]}">ציון כולל:</span>'
+                f'{_score_badge(total_score)}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.progress(score_pct / 100)
 
 
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render_analysis(portfolio, data, td_str: str, api_key: str = "", claude_api_key: str = ""):
     section_title(
-        "מערכת 5 הפילטרים — ניתוח השקעה",
-        "הערכת מניות שעדיין אינן בתיק לפי 5 קריטריונים מרכזיים",
+        "מערכת 5 הפילטרים — ניתוח מניות לא בתיק",
+        "הערכת מניות מוצעות לפי 5 קריטריונים מרכזיים — רווחים, תחרות, הנהלה, תזמון וסיכון",
     )
+
+    owned      = set(all_tickers(portfolio))
+    candidates = [s for s in SUGGESTIONS if s["ticker"] not in owned]
 
     # ── Intro expander ────────────────────────────────────────────────────────
     with st.expander("מה זה 5 הפילטרים? 📖", expanded=False):
         st.markdown(
             '<div dir="rtl" style="font-size:13px;color:#cccccc;line-height:1.9">'
-            "<b>1. 📈 צמיחת הכנסות</b> — האם ההכנסות גדלות? האם המגמה יציבה? מה קצב הצמיחה השנתי?<br>"
-            "<b>2. 🏆 עמדה תחרותית</b> — האם לחברה יש חפיר תחרותי? האם היא מובילת שוק? כוח תמחור?<br>"
-            "<b>3. 👔 איכות הנהלה</b> — רקורד ביצוע, ניהול הון, ROE, מדיניות חוב, מוניטין הנהלה?<br>"
-            "<b>4. ⏱️ תזמון שוק</b> — האם המניה חזקה טכנית? מומנטום? קרבה לשיא/שפל 52 שבוע?<br>"
-            "<b>5. ⚠️ הערכת סיכון</b> — תנודתיות, ריבית שורט, סיכון סקטורי, פיזור אנליסטים?<br><br>"
-            "כל פילטר מקבל ציון 1-5 (1=גרוע, 5=מצוין). <b>ציון כולל מתוך 25.</b>"
+            "<b>1. 📈 צמיחת הכנסות</b> — האם ההכנסות גדלות? האם המגמה יציבה?<br>"
+            "<b>2. 🏆 עמדה תחרותית</b> — האם לחברה יש חפיר תחרותי? כוח תמחור?<br>"
+            "<b>3. 👔 איכות הנהלה</b> — רקורד ביצוע, ROE, ניהול הון ומוניטין?<br>"
+            "<b>4. ⏱️ תזמון שוק</b> — מומנטום מחיר, קרבה לשיא/שפל 52 שבוע?<br>"
+            "<b>5. ⚠️ הערכת סיכון</b> — תנודתיות, ריבית שורט, סיכון סקטורי?<br><br>"
+            "כל פילטר מקבל ציון 1–5 (1=גרוע, 5=מצוין). <b>ציון כולל מתוך 25.</b>"
             "</div>",
             unsafe_allow_html=True,
         )
 
-    # ── Ticker input ──────────────────────────────────────────────────────────
-    owned = set(all_tickers(portfolio))
+    # ── Fetch data for all candidates in one batch ────────────────────────────
+    if not candidates:
+        st.info("כל המניות המוצעות כבר בתיק שלך.")
+    else:
+        tickers_tuple = tuple(sorted(s["ticker"] for s in candidates))
+
+        with st.spinner("טוען נתוני שוק..."):
+            prices_all    = get_stock_data(tickers_tuple, td_str)
+            targets_all   = get_analyst_targets(tickers_tuple, td_str)
+            consensus_all = get_consensus(tickers_tuple, td_str, api_key)
+            fund_all: dict = {}
+            if FINVIZ_AVAILABLE:
+                fund_all = get_finviz_fundamentals(tickers_tuple, td_str) or {}
+
+        st.markdown(
+            f'<div dir="rtl" style="font-size:12px;color:{COLOR["text_dim"]};margin-bottom:4px">'
+            f'🔬 {len(candidates)} מניות לניתוח — לחץ על כל מניה להצגת 5 הפילטרים'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        for i, s in enumerate(candidates):
+            t   = s["ticker"]
+            p   = prices_all.get(t)
+            tgt = targets_all.get(t)
+            con = consensus_all.get(t, {})
+            fun = fund_all.get(t, {}) if fund_all else {}
+            _render_ticker_section(
+                ticker=t,
+                name=s["name"],
+                theme=s["theme"],
+                p=p,
+                con=con,
+                tgt=tgt,
+                fun=fun or None,
+                td_str=td_str,
+                claude_api_key=claude_api_key,
+                expanded=(i == 0),  # open first ticker by default
+            )
+
+    # ── Custom ticker search ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f'<div dir="rtl" style="font-size:13px;font-weight:700;color:{COLOR["primary"]};'
+        f'margin-bottom:8px">🔍 ניתוח מניה אחרת</div>',
+        unsafe_allow_html=True,
+    )
 
     col_inp, col_btn = st.columns([3, 1])
     with col_inp:
         ticker_input = st.text_input(
-            "הכנס סימול מניה לניתוח",
-            placeholder="לדוגמה: MSFT, TSLA, NVDA",
-            key="analysis_ticker",
+            "הכנס סימול מניה",
+            placeholder="לדוגמה: TSLA, AAPL, PLTR",
+            key="analysis_custom_ticker",
             label_visibility="collapsed",
         ).strip().upper()
     with col_btn:
-        analyze_btn = st.button("🔍 נתח", key="analyze_btn", use_container_width=True)
+        analyze_btn = st.button("🔍 נתח", key="analyze_custom_btn", use_container_width=True)
 
-    # Persist across reruns
     if analyze_btn and ticker_input:
-        st.session_state["_analysis_ticker"] = ticker_input
+        st.session_state["_analysis_custom"] = ticker_input
 
-    ticker = st.session_state.get("_analysis_ticker", ticker_input) or ""
+    custom = st.session_state.get("_analysis_custom", ticker_input) or ""
 
-    if not ticker:
-        st.markdown(
-            f'<div dir="rtl" style="color:{COLOR["text_dim"]};font-size:13px;margin-top:16px">'
-            f'הכנס סימול מניה וקלק על "נתח" לקבלת הערכת 5 הפילטרים.'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    if ticker in owned:
-        st.warning(f"{ticker} כבר בתיק שלך — השתמש בטאב 'אנליסטים' לניתוח מפורט.")
-        return
-
-    # ── Fetch data ────────────────────────────────────────────────────────────
-    with st.spinner(f"מנתח את {ticker}..."):
-        prices_data     = get_stock_data((ticker,), td_str)
-        targets_data    = get_analyst_targets((ticker,), td_str)
-        consensus_data  = get_consensus((ticker,), td_str, api_key)
-        fundamentals_data: Optional[dict] = None
-        if FINVIZ_AVAILABLE:
-            fundamentals_data = get_finviz_fundamentals((ticker,), td_str)
-
-    p   = prices_data.get(ticker)
-    tgt = targets_data.get(ticker)
-    con = consensus_data.get(ticker, {})
-    fun = (fundamentals_data or {}).get(ticker, {}) if fundamentals_data else {}
-
-    # ── Live data summary bar ─────────────────────────────────────────────────
-    if p:
-        price_color  = COLOR["positive"] if (p.get("change") or 0) >= 0 else COLOR["negative"]
-        change_str   = f"{p['change']:+.2f}%" if p.get("change") is not None else "—"
-        upside_str   = "—"
-        upside_color = COLOR["text_dim"]
-        if p.get("price") and tgt and tgt.get("mean"):
-            up           = (tgt["mean"] - p["price"]) / p["price"] * 100
-            upside_str   = f"{up:+.1f}%"
-            upside_color = COLOR["positive"] if up >= 0 else COLOR["negative"]
-        label       = con.get("label", "N/A")
-        label_color = (
-            COLOR["positive"] if "Buy" in label else
-            COLOR["negative"] if "Sell" in label else
-            COLOR["neutral"]
-        )
-        st.markdown(
-            f'<div dir="rtl" style="background:#111827;border:1px solid #1f2937;'
-            f'border-radius:10px;padding:12px 18px;margin-bottom:16px;'
-            f'display:flex;gap:28px;flex-wrap:wrap;align-items:center">'
-            f'<span style="font-size:18px;font-weight:800;color:{COLOR["primary"]}">{ticker}</span>'
-            f'<span style="font-size:13px;color:{COLOR["text_dim"]}">'
-            f'{TICKER_NAMES.get(ticker, "")}</span>'
-            f'<span style="font-size:14px;font-weight:700">${p["price"]:.2f}'
-            f' <span style="color:{price_color}">{change_str}</span></span>'
-            f'<span style="font-size:12px;color:{COLOR["text_dim"]}">אפסייד: '
-            f'<b style="color:{upside_color}">{upside_str}</b></span>'
-            f'<span style="font-size:12px;color:{COLOR["text_dim"]}">קונצנזוס: '
-            f'<b style="color:{label_color}">{label}</b></span>'
-            + (
-                f'<span style="font-size:12px;color:{COLOR["text_dim"]}">בטא: '
-                f'<b>{p["beta"]:.2f}</b></span>'
-                if p.get("beta") else ""
-            ) +
-            '</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.warning(f"לא נמצאו נתוני מחיר עבור {ticker}. בדוק שהסימול תקין.")
-
-    # ── Build data summary for Claude ────────────────────────────────────────
-    data_summary = _build_data_summary(ticker, p, con, tgt, fun or None)
-
-    # ── Get AI ratings ────────────────────────────────────────────────────────
-    eval_result: dict = {}
-    if claude_api_key:
-        eval_result = _run_five_filter_eval(ticker, data_summary, td_str, claude_api_key)
-
-    # ── Filter cards (2 columns) ──────────────────────────────────────────────
-    st.markdown(
-        f'<div dir="rtl" style="font-size:13px;font-weight:700;color:{COLOR["primary"]};'
-        f'margin-bottom:8px">📊 הערכת 5 הפילטרים — {ticker}</div>',
-        unsafe_allow_html=True,
-    )
-
-    total_score = 0
-    # Display in pairs: (0,1), (2,3), then (4,) alone
-    for i in range(0, len(_FILTERS), 2):
-        pair = _FILTERS[i: i + 2]
-        cols = st.columns(len(pair))
-        for col, (fkey, fname, ficon) in zip(cols, pair):
-            fdata  = eval_result.get(fkey, {})
-            rating = int(fdata.get("rating", 0)) if fdata else 0
-            expl   = fdata.get("explanation", "") if fdata else ""
-            if not expl:
-                expl = (
-                    _no_key_explanation()
-                    if not claude_api_key
-                    else f'<span style="color:{COLOR["text_dim"]}">טוען...</span>'
-                )
-            total_score += rating
-            with col:
-                st.markdown(
-                    _filter_card_html(fname, ficon, rating, expl),
-                    unsafe_allow_html=True,
-                )
-
-    # ── Overall score ─────────────────────────────────────────────────────────
-    st.divider()
-    if eval_result:
-        score_pct = int(total_score / 25 * 100)
-        if total_score < 10:
-            verdict, verdict_color = "לא מומלץ", COLOR["negative"]
-        elif total_score < 15:
-            verdict, verdict_color = "ניטרלי", COLOR["warning"]
-        elif total_score < 20:
-            verdict, verdict_color = "מעניין", COLOR["primary"]
-        elif total_score < 23:
-            verdict, verdict_color = "חזק", COLOR["positive"]
+    if custom:
+        if custom in owned:
+            st.warning(f"{custom} כבר בתיק שלך — השתמש בטאב 'אנליסטים' לניתוח מפורט.")
         else:
-            verdict, verdict_color = "חזק מאוד 🌟", COLOR["positive"]
+            with st.spinner(f"מנתח את {custom}..."):
+                cp    = get_stock_data((custom,), td_str).get(custom)
+                ctgt  = get_analyst_targets((custom,), td_str).get(custom)
+                ccon  = get_consensus((custom,), td_str, api_key).get(custom, {})
+                cfun: Optional[dict] = None
+                if FINVIZ_AVAILABLE:
+                    cfun_all = get_finviz_fundamentals((custom,), td_str)
+                    cfun     = (cfun_all or {}).get(custom)
 
-        st.markdown(
-            f'<div dir="rtl" style="display:flex;align-items:center;gap:16px;margin-bottom:6px">'
-            f'<span style="font-size:24px;font-weight:800;color:{verdict_color}">'
-            f'{total_score}/25</span>'
-            f'<span style="font-size:14px;color:{verdict_color};font-weight:700">{verdict}</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        st.progress(score_pct / 100)
-        st.caption(f"ציון מבוסס-AI עבור {ticker} לפי 5 פילטרי השקעה")
-    elif not claude_api_key:
-        st.info("הוסף ANTHROPIC_API_KEY לקובץ .streamlit/secrets.toml לקבלת ציון AI.")
-
-    # ── Fundamentals detail ───────────────────────────────────────────────────
-    if fun:
-        with st.expander("📋 נתוני יסוד מפורטים", expanded=False):
-            items = [
-                ("P/E", fun.get("P/E")),
-                ("P/E קדימה", fun.get("Forward P/E")),
-                ("EPS (TTM)", fun.get("EPS (TTM)")),
-                ("ROE", fun.get("ROE")),
-                ("שווי שוק", fun.get("Market Cap")),
-                ("Short Float", fun.get("Short Float")),
-                ("בעלות מוסדית", fun.get("Inst Own")),
-                ("סקטור", fun.get("Sector")),
-            ]
-            shown = [(k, v) for k, v in items if v]
-            if shown:
-                n_cols = 4
-                rows = [shown[i: i + n_cols] for i in range(0, len(shown), n_cols)]
-                for row in rows:
-                    cols = st.columns(n_cols)
-                    for col, (label, val) in zip(cols, row):
-                        col.metric(label, val)
+            if not cp:
+                st.warning(f"לא נמצאו נתוני מחיר עבור {custom}. בדוק שהסימול תקין.")
+            else:
+                _render_ticker_section(
+                    ticker=custom,
+                    name=TICKER_NAMES.get(custom, custom),
+                    theme="ניתוח מותאם אישית",
+                    p=cp,
+                    con=ccon,
+                    tgt=ctgt,
+                    fun=cfun,
+                    td_str=td_str,
+                    claude_api_key=claude_api_key,
+                    expanded=True,
+                )
 
     # ── Disclaimer ────────────────────────────────────────────────────────────
     st.markdown(
         f'<div dir="rtl" style="font-size:10px;color:{COLOR["text_dim"]};'
-        f'border-top:1px solid #222;padding-top:8px;margin-top:8px">'
+        f'border-top:1px solid #222;padding-top:8px;margin-top:12px">'
         f'⚠️ ניתוח זה נוצר על ידי AI ומיועד לצרכי מידע בלבד. '
         f'אינו מהווה ייעוץ השקעות. כל השקעה כרוכה בסיכון — בצע בדיקה עצמאית.'
         f'</div>',

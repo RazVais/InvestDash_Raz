@@ -11,32 +11,27 @@ from src.logger import get_logger
 _log = get_logger(__name__)
 
 
+def _fetch_one_macro(args):
+    key, sym = args
+    try:
+        hist = yf.Ticker(sym).history(period="5d")
+        if not hist.empty:
+            close = hist["Close"].dropna()
+            if not close.empty:
+                return key, float(close.iloc[-1])
+        _log.warning("Macro indicator returned no data", extra={"key": key, "symbol": sym})
+    except Exception:
+        _log.error("Macro indicator fetch failed", exc_info=True, extra={"key": key, "symbol": sym})
+    return key, None
+
+
 @st.cache_data(ttl=1800)
 def get_macro_indicators(trading_day):
-    """Return {vix, yield_10y, dxy} — latest available values."""
+    """Return {vix, yield_10y, dxy} — latest available values, fetched in parallel."""
     _log.info("get_macro_indicators entry", extra={"trading_day": trading_day})
-    result = {}
-    symbols = list(MACRO_SYMBOLS.values())
-    keys    = list(MACRO_SYMBOLS.keys())
-    try:
-        raw = yf.download(symbols, period="5d", progress=False, auto_adjust=True)
-        for key, sym in zip(keys, symbols):
-            try:
-                if len(symbols) == 1:
-                    close = raw["Close"].dropna()
-                else:
-                    close = raw["Close"][sym].dropna()
-                result[key] = float(close.iloc[-1]) if not close.empty else None
-                if result[key] is None:
-                    _log.warning("Macro indicator returned no data", extra={"key": key, "symbol": sym})
-            except Exception:
-                _log.error("Failed to extract macro indicator", exc_info=True, extra={"key": key, "symbol": sym})
-                result[key] = None
-    except Exception:
-        _log.error("Macro batch download failed", exc_info=True, extra={"symbols": symbols})
-        for key in keys:
-            result[key] = None
-    return result
+    items = list(MACRO_SYMBOLS.items())
+    with ThreadPoolExecutor(max_workers=len(items)) as ex:
+        return dict(ex.map(_fetch_one_macro, items))
 
 
 def _fetch_one_commodity(args):

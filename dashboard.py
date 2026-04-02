@@ -34,9 +34,9 @@ from src.tabs.analysis_tab     import render_analysis
 
 _log = get_logger(__name__)
 
-_TABS = ["סקירה", "תיק שלי", "גרפים", "אנליסטים",
-         "פונדמנטלס", "דגלים אדומים", "חדשות", "💡 המלצות",
-         "📋 יומי", "🔬 ניתוח"]
+_TABS_PRIMARY   = ["סקירה", "תיק שלי", "גרפים", "אנליסטים", "פונדמנטלס", "דגלים אדומים"]
+_TABS_SECONDARY = ["חדשות", "💡 המלצות", "📋 יומי", "🔬 ניתוח"]
+_TABS = _TABS_PRIMARY + _TABS_SECONDARY
 
 # ── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -114,27 +114,33 @@ st.markdown(
 
 
 def _render_nav_tabs():
-    """Horizontal tab bar that survives reruns via st.session_state."""
+    """Two-row horizontal tab bar: primary (6 tabs) + secondary (4 tabs)."""
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = _TABS[0]
 
-    # Bottom border under the whole bar
+    def _row(tabs, border_bottom=False):
+        cols = st.columns(len(tabs))
+        for col, label in zip(reversed(cols), tabs):
+            is_active = st.session_state.active_tab == label
+            css_class = "nav-tab-active" if is_active else "nav-tab-inactive"
+            with col:
+                st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+                if st.button(label, key=f"_nav_{label}", use_container_width=True):
+                    st.session_state.active_tab = label
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+        if border_bottom:
+            st.markdown(
+                '<div style="border-bottom:1px solid #333;margin-bottom:2px"></div>',
+                unsafe_allow_html=True,
+            )
+
+    _row(_TABS_PRIMARY, border_bottom=True)
+    _row(_TABS_SECONDARY)
     st.markdown(
-        '<div style="border-bottom:1px solid #333;margin-bottom:12px"></div>',
+        '<div style="border-bottom:2px solid #1f2937;margin-bottom:12px"></div>',
         unsafe_allow_html=True,
     )
-
-    cols = st.columns(len(_TABS))
-    # Reverse column order for RTL (rightmost = first tab)
-    for col, label in zip(reversed(cols), _TABS):
-        is_active = st.session_state.active_tab == label
-        css_class = "nav-tab-active" if is_active else "nav-tab-inactive"
-        with col:
-            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-            if st.button(label, key=f"_nav_{label}", use_container_width=True):
-                st.session_state.active_tab = label
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg):
