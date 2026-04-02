@@ -41,6 +41,28 @@ def get_flag_summary(portfolio, data):
     return n_trig, n_watch
 
 
+def get_all_flag_statuses(portfolio, data):
+    """
+    Return list of dicts for every applicable flag.
+    Each dict: {ticker, flag, threshold, action, status, detail}
+    Used by the email report module.
+    """
+    result = []
+    for ticker, flag, threshold, action in _FLAG_DEFS:
+        if ticker not in all_tickers(portfolio) and not ticker.startswith("🗂"):
+            continue
+        status, detail = _evaluate(ticker, flag, portfolio, data)
+        result.append({
+            "ticker":    ticker,
+            "flag":      flag,
+            "threshold": threshold,
+            "action":    action,
+            "status":    status,
+            "detail":    detail,
+        })
+    return result
+
+
 def render_red_flags(portfolio, data, td_str):
     market_closed = not data.get("_market_open", True)
 

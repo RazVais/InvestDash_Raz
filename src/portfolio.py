@@ -25,7 +25,7 @@ def _build_defaults():
             {"ticker": t, "shares": 0.0, "buy_date": today_str}
             for t in tickers
         ]
-    return {"layers": layers}
+    return {"layers": layers, "settings": {"email_recipients": [], "auto_alert": False}}
 
 
 # ── Load / Save ───────────────────────────────────────────────────────────────
@@ -129,6 +129,25 @@ def remove_lot(portfolio, layer, ticker, buy_date):
         del portfolio["layers"][layer]
     save_portfolio(portfolio)
     return portfolio
+
+
+# ── Email settings ────────────────────────────────────────────────────────────
+
+def get_email_settings(portfolio):
+    """Return {'email_recipients': [...], 'auto_alert': bool}."""
+    return portfolio.setdefault("settings", {"email_recipients": [], "auto_alert": False})
+
+
+def set_email_recipients(portfolio, emails):
+    """Persist a new email-recipients list."""
+    portfolio.setdefault("settings", {})["email_recipients"] = list(emails)
+    save_portfolio(portfolio)
+
+
+def set_auto_alert(portfolio, enabled: bool):
+    """Persist the auto-alert toggle."""
+    portfolio.setdefault("settings", {})["auto_alert"] = bool(enabled)
+    save_portfolio(portfolio)
 
 
 def remove_ticker(portfolio, ticker):

@@ -18,7 +18,9 @@ from src.config    import COLOR
 from src.market    import get_market_state, market_badge, fmt_trading_day
 from src.portfolio import load_portfolio
 from src.data.loader import load_all_data
-from src.tabs.red_flags import get_flag_summary
+from src.email_report import send_alert_async, send_digest_async, smtp_configured, test_smtp
+from src.portfolio import get_email_settings, set_auto_alert, set_email_recipients
+from src.tabs.red_flags import get_all_flag_statuses, get_flag_summary
 from src.tabs.overview         import render_overview
 from src.tabs.portfolio_tab    import render_portfolio
 from src.tabs.charts           import render_charts
@@ -132,8 +134,115 @@ def _render_nav_tabs():
             st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_sidebar(portfolio, data, market_state):
-    """Sidebar: market badge, flag summary, macro strip, refresh + exit."""
+def _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg):
+    """Auto-send an alert email when new flags become triggered this run."""
+    settings   = get_email_settings(portfolio)
+    recipients = settings.get("email_recipients", [])
+    if not settings.get("auto_alert") or not recipients or not smtp_configured(smtp_cfg):
+        return
+
+    # Compare to previous run's flag states stored in session_state
+    prev = st.session_state.get("_prev_flag_states", {})
+    curr = {f"{f['ticker']}|{f['flag']}": f["status"] for f in flag_statuses}
+    newly_triggered = [
+        f for f in flag_statuses
+        if f["status"] == "triggered"
+        and prev.get(f"{f['ticker']}|{f['flag']}") != "triggered"
+    ]
+    st.session_state["_prev_flag_states"] = curr
+
+    if newly_triggered:
+        send_alert_async(newly_triggered, td_str, recipients, smtp_cfg)
+        _log.info("Auto-alert sent", extra={"flags": [f["ticker"] for f in newly_triggered]})
+
+
+def _render_email_section(portfolio, data, flag_statuses, td_str, smtp_cfg):
+    """Sidebar expander: manage recipients, send digest, SMTP test."""
+    settings   = get_email_settings(portfolio)
+    recipients = list(settings.get("email_recipients", []))
+    configured = smtp_configured(smtp_cfg)
+
+    with st.expander("📧 דוח במייל", expanded=False):
+        # ── Recipient list ────────────────────────────────────────────────
+        st.markdown(
+            f'<div dir="rtl" style="font-size:12px;font-weight:700;'
+            f'color:{COLOR["primary"]};margin-bottom:6px">כתובות מייל</div>',
+            unsafe_allow_html=True,
+        )
+        for i, email in enumerate(recipients):
+            col_addr, col_del = st.columns([4, 1])
+            col_addr.caption(email)
+            if col_del.button("✕", key=f"_del_email_{i}", help="הסר"):
+                recipients.pop(i)
+                set_email_recipients(portfolio, recipients)
+                st.rerun()
+
+        # ── Add new recipient ─────────────────────────────────────────────
+        new_email = st.text_input(
+            "הוסף כתובת", placeholder="user@example.com",
+            key="_new_email_input", label_visibility="collapsed",
+        ).strip()
+        if st.button("➕ הוסף", key="_add_email_btn", use_container_width=True):
+            if new_email and "@" in new_email and new_email not in recipients:
+                recipients.append(new_email)
+                set_email_recipients(portfolio, recipients)
+                st.success(f"נוסף: {new_email}")
+                st.rerun()
+            elif new_email in recipients:
+                st.warning("כתובת זו כבר קיימת.")
+            else:
+                st.error("כתובת לא תקינה.")
+
+        st.divider()
+
+        # ── Auto-alert toggle ─────────────────────────────────────────────
+        auto_on = st.toggle(
+            "🔔 שלח התרעה אוטומטית בדגל חדש",
+            value=bool(settings.get("auto_alert", False)),
+            key="_auto_alert_toggle",
+            disabled=not configured,
+            help="שולח מייל מיידי כשדגל עובר למצב מופעל" if configured
+                 else "הגדר SMTP ב-secrets.toml תחילה",
+        )
+        if auto_on != settings.get("auto_alert", False):
+            set_auto_alert(portfolio, auto_on)
+
+        # ── Manual send ───────────────────────────────────────────────────
+        if not configured:
+            st.caption("⚙️ הוסף SMTP_HOST / SMTP_USER / SMTP_PASSWORD לקובץ .streamlit/secrets.toml")
+        elif not recipients:
+            st.caption("הוסף כתובת מייל לשליחה.")
+        else:
+            if st.button("📤 שלח דוח עכשיו", key="_send_digest_btn",
+                         use_container_width=True):
+                st.session_state["_email_sending"] = True
+                send_digest_async(
+                    portfolio, data, flag_statuses, td_str, recipients, smtp_cfg,
+                    on_done=lambda ok: st.session_state.update(
+                        {"_email_sending": False, "_email_last_ok": ok}
+                    ),
+                )
+
+            if st.session_state.get("_email_sending"):
+                st.caption("📨 שולח...")
+            elif "_email_last_ok" in st.session_state:
+                if st.session_state["_email_last_ok"]:
+                    st.success("✅ נשלח בהצלחה")
+                else:
+                    st.error("❌ שליחה נכשלה — בדוק הגדרות SMTP")
+
+            # SMTP test button
+            if st.button("🔧 בדוק SMTP", key="_test_smtp_btn",
+                         use_container_width=True):
+                err = test_smtp(smtp_cfg, recipients[0])
+                if err:
+                    st.error(err)
+                else:
+                    st.success(f"✅ מייל בדיקה נשלח ל-{recipients[0]}")
+
+
+def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=None, td_str=""):
+    """Sidebar: market badge, flag summary, macro strip, email, refresh + exit."""
     with st.sidebar:
         st.markdown(market_badge(market_state), unsafe_allow_html=True)
         st.caption(fmt_trading_day(market_state))
@@ -241,6 +350,8 @@ def _render_sidebar(portfolio, data, market_state):
             )
 
         st.divider()
+        _render_email_section(portfolio, data, flag_statuses or [], td_str, smtp_cfg or {})
+        st.divider()
 
         if st.button("🔴 יציאה", use_container_width=True,
                      help="סגור את האפליקציה וסיים את כל התהליכים"):
@@ -270,14 +381,25 @@ def main():
     try:
         api_key        = st.secrets.get("FINNHUB_API_KEY", "")
         claude_api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        smtp_cfg = {
+            "host":     st.secrets.get("SMTP_HOST", ""),
+            "port":     st.secrets.get("SMTP_PORT", 587),
+            "user":     st.secrets.get("SMTP_USER", ""),
+            "password": st.secrets.get("SMTP_PASSWORD", ""),
+        }
     except Exception:
         api_key        = ""
         claude_api_key = ""
+        smtp_cfg       = {}
 
     active = st.session_state.get("active_tab", _TABS[0])
     data = load_all_data(portfolio, market_state, api_key, active_tab=active)
 
-    _render_sidebar(portfolio, data, market_state)
+    # ── Auto-alert: detect newly-triggered flags ──────────────────────────
+    flag_statuses = get_all_flag_statuses(portfolio, data)
+    _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg)
+
+    _render_sidebar(portfolio, data, market_state, smtp_cfg, flag_statuses, td_str)
 
     # ── App header ────────────────────────────────────────────────────────
     st.markdown(
