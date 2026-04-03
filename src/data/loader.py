@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.data.analysts import (
     get_analyst_targets,
@@ -143,11 +144,13 @@ def load_all_data(portfolio, market_state, api_key="", active_tab="סקירה"):
         # Start background warming only when idle (avoid stacking threads)
         if deferred and _bg_done.is_set():
             _bg_done.clear()
-            threading.Thread(
+            t = threading.Thread(
                 target=_warm_background,
                 args=(list(deferred), tickers, td, api_key),
                 daemon=True,
-            ).start()
+            )
+            add_script_run_ctx(t)
+            t.start()
 
     data["_market_open"] = market_state.get("is_open", False)
     data["_deferred"]    = deferred

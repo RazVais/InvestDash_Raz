@@ -1,18 +1,39 @@
-# RazDashboard v2
+# RazDashboard v3
 
 Personal investment dashboard for the "Age of AI" portfolio. Tracks stocks across strategic layers with live data from Yahoo Finance, Finviz, and Finnhub. Built with Streamlit + Python, Hebrew RTL UI.
 
 ## Features
 
+### Sidebar navigation
+Bloomberg/TradingView-style layout: sidebar is the primary navigation hub with 5 main tabs, macro watchlist with SVG sparklines, and tool buttons at the bottom.
+
+### KPI Header
+Live stats bar at the top of every page:
+- **שווי תיק** — total portfolio value (all lots × current prices)
+- **רווח/הפסד** — total P&L in $ and %
+- **Alpha vs VOO** — 30-day portfolio return minus VOO 30-day return
+- **🔔 Bell** — alert count badge; red if flags triggered, yellow if watches, click to open Red Flags
+
+### Primary tabs (sidebar)
 - **סקירה (Overview)** — macro strip (VIX, 10Y yield, DXY), performance table with upside % and alpha vs VOO, portfolio P&L summary, sector allocation donut chart, 1-year correlation matrix heatmap
 - **תיק שלי (Portfolio)** — multi-lot model: track multiple buy events per ticker with individual dates, prices, and P&L; add/edit/remove individual lots or entire tickers
 - **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO
 - **אנליסטים (Analysts)** — consensus table with mini distribution bar (Strong Buy/Buy/Hold/Sell/Strong Sell), price target range chart with error bars, recent upgrades/downgrades with major firm highlighting (JPM, GS, MS, BofA, etc.)
 - **פונדמנטלס (Fundamentals)** — P/E, Fwd P/E, EPS, ROE, ROA, P/B, P/S, Debt/Equity, Market Cap, Short Float, Institutional Ownership, Sector, Industry via Finviz; next earnings countdown with urgency colors; dividend yield; EPS trend on-demand
-- **דגלים אדומים (Red Flags)** — all flags 100% automated (no manual entries): commodity price checks (uranium, copper, gold), analyst proxy signals, portfolio structure checks, thesis checks. Status: 🔴/🟡/🟢/⚫
+
+### Red Flags (bell icon in header)
+All flags 100% automated (no manual entries): commodity price checks (uranium, copper, gold), analyst proxy signals, portfolio structure checks, thesis checks. Status: 🔴/🟡/🟢/⚫
+
+### Secondary tabs (above main content)
 - **חדשות (News)** — latest headlines per ticker, filterable by ticker, date-sorted
+- **💡 המלצות (Recommendations)** — AI + analyst-backed buy/hold/sell recommendations
+- **📋 יומי (Daily Brief)** — per-ticker Hebrew daily brief: consensus + upside, recent upgrade/downgrade pills, red flag status, 1-month alpha vs VOO. Optional Claude Haiku AI narrative (2-3 Hebrew bullet points, cached 1h)
+- **🔬 ניתוח (5-Filter Analysis)** — auto-analyzes all watch-list tickers not currently in portfolio using 5 investment filters via Claude Haiku: revenue growth, competitive position, leadership, market timing, risk. Scored 1–5 per filter with color coding. Custom ticker input for any stock
+
+### Infrastructure
 - **Market-aware caching** — data fetched once per trading day; Refresh button disabled on weekends/holidays
-- **Sidebar** — live market status badge, flag summary count, macro indicators, refresh button
+- **Two-tier parallel loading** — active tab data loaded immediately in ThreadPoolExecutor; remaining keys pre-warmed in background daemon thread
+- **Macro sparklines** — 7-day SVG sparklines for VIX, 10Y yield, DXY in sidebar (green/red trend coloring)
 
 ## Setup
 
@@ -30,12 +51,13 @@ pip install -r requirements.txt
 1. Sign up at [finnhub.io](https://finnhub.io) (free tier is sufficient)
 2. Copy your API key
 
-### 3. Add your Finnhub key
+### 3. Add your Finnhub key (and optionally Claude key)
 Create (or edit) `.streamlit/secrets.toml`:
 ```toml
-FINNHUB_API_KEY = "your_actual_key_here"
+FINNHUB_API_KEY = "your_finnhub_key_here"
+CLAUDE_API_KEY  = "your_claude_key_here"   # optional — enables AI daily briefs + 5-filter analysis
 ```
-The app runs without a Finnhub key — it falls back to yfinance for consensus data.
+The app runs without either key — Finnhub falls back to yfinance; Claude features show a prompt to add a key.
 
 ### 4. Run
 ```bash
@@ -56,13 +78,15 @@ Manage positions through the **תיק שלי** tab: add a lot (ticker + shares +
 
 Multi-file Python package:
 ```
-src/yf_patch.py     ← Windows SQLite fix (MUST be first import)
-src/config.py       ← all constants, thresholds, Hebrew strings
-src/market.py       ← trading day detection and market status
-src/portfolio.py    ← multi-lot JSON persistence
-src/data/           ← individual data fetchers with @st.cache_data
-src/tabs/           ← one module per tab
-dashboard.py        ← thin entry point (page config + tab routing only)
+src/yf_patch.py       ← Windows SQLite fix (MUST be first import)
+src/config.py         ← all constants, thresholds, Hebrew strings
+src/market.py         ← trading day detection and market status
+src/portfolio.py      ← multi-lot JSON persistence
+src/data/             ← individual data fetchers with @st.cache_data
+src/tabs/             ← one module per tab
+  daily_brief_tab.py  ← 📋 יומי: per-ticker brief + Claude Haiku narrative
+  analysis_tab.py     ← 🔬 ניתוח: 5-filter Claude Haiku evaluation
+dashboard.py          ← thin entry point (page config, KPI header, routing)
 ```
 
 ## Notes
@@ -71,6 +95,7 @@ dashboard.py        ← thin entry point (page config + tab routing only)
 - **plotly** is pinned `>=5.18,<6` — plotly 6.x causes a segfault on Windows Streamlit.
 - **numpy** is pinned `<2` — numpy 2.x breaks pyarrow ABI compatibility.
 - **yfinance** — do not upgrade past 0.2.54 without testing the `src/yf_patch.py` cache patch.
+- **Streamlit address** — `address = "localhost"` in `config.toml` is required for `crypto.randomUUID` (secure context) in Streamlit 1.43+.
 
 ## Changelog
 
@@ -80,3 +105,6 @@ dashboard.py        ← thin entry point (page config + tab routing only)
 | v1.1 | 2026-03-29 | Full Hebrew RTL UI — all labels, tabs, buttons translated |
 | v1.2 | 2026-03-29 | Dynamic sidebar — live betas, dividend yields, analyst actions from major firms |
 | v2.0 | 2026-03-29 | Full rewrite — multi-file package, 7 tabs, multi-lot portfolio model, 1yr candlestick + technical overlays, macro strip, correlation matrix, all flags automated |
+| v2.1 | 2026-04-02 | Two-tier parallel data loading with background cache warming |
+| v2.2 | 2026-04-02 | 📋 יומי daily brief tab + 🔬 ניתוח 5-filter analysis tab with Claude Haiku AI |
+| v3.0 | 2026-04-03 | Bloomberg-style UI: sidebar primary nav, KPI header (value/P&L/alpha/bell), secondary tab bar, macro sparklines |

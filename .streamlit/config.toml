@@ -4,3 +4,4 @@ primaryColor = "#00cf8d"
 
 [server]
 headless = true
+address = "localhost"

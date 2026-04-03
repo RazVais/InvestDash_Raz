@@ -13,6 +13,7 @@ from email.mime.text import MIMEText
 import smtplib
 import threading
 from typing import Optional
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.logger import get_logger
 
@@ -276,7 +277,9 @@ def send_digest_async(
         if on_done:
             on_done(ok)
 
-    threading.Thread(target=_run, daemon=True).start()
+    t = threading.Thread(target=_run, daemon=True)
+    add_script_run_ctx(t)
+    t.start()
 
 
 def send_alert_async(
@@ -295,7 +298,16 @@ def send_alert_async(
         if on_done:
             on_done(ok)
 
-    threading.Thread(target=_run, daemon=True).start()
+    t = threading.Thread(target=_run, daemon=True)
+    add_script_run_ctx(t)
+    t.start()
+
+
+def send_digest_sync(portfolio, data, flag_statuses, td_str, recipients, smtp_cfg):
+    """Synchronous send for immediate UI feedback."""
+    html    = build_digest_html(portfolio, data, flag_statuses, td_str)
+    subject = f"📊 RazDashboard — דוח תיק {td_str}"
+    return _smtp_send(recipients, subject, html, smtp_cfg)
 
 
 def smtp_configured(smtp_cfg: dict) -> bool:
