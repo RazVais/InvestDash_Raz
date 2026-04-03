@@ -35,43 +35,47 @@ _RATING_TEXT_COLORS = {1: "#fff", 2: "#fff", 3: "#000", 4: "#000", 5: "#000"}
 
 @st.cache_data(ttl=3600)
 def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_api_key: str) -> dict:
-    """Call Claude Haiku to rate 5 filters. Returns dict keyed by filter_key."""
+    """Call Claude Haiku to rate 5 filters. Returns dict keyed by filter_key, or {"_error": msg}."""
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=claude_api_key)
         prompt = (
-            f"נתח את המניה {ticker} לפי 5 פילטרים להשקעה, בהתאם לנתונים:\n"
+            f"נתח את המניה {ticker} לפי 5 פילטרים להשקעה. השתמש בנתוני השוק הבאים כולל ביצועי השנה האחרונה:\n"
             f"{data_summary}\n\n"
-            "החזר JSON בדיוק בפורמט הבא (ללא טקסט נוסף):\n"
+            "החזר JSON בלבד (ללא טקסט לפניו או אחריו):\n"
             '{\n'
-            '  "revenue_growth":    {"rating": 1, "explanation": "..."},\n'
-            '  "competitive_pos":   {"rating": 1, "explanation": "..."},\n'
-            '  "leadership":        {"rating": 1, "explanation": "..."},\n'
-            '  "market_timing":     {"rating": 1, "explanation": "..."},\n'
-            '  "risk_assessment":   {"rating": 1, "explanation": "..."}\n'
+            '  "revenue_growth":    {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
+            '  "competitive_pos":   {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
+            '  "leadership":        {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
+            '  "market_timing":     {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
+            '  "risk_assessment":   {"rating": 3, "explanation": "2-3 משפטים בעברית"}\n'
             '}\n\n'
-            "rating הוא מספר שלם בין 1 ל-5 (1=גרוע, 5=מצוין).\n"
-            "explanation הוא 2-3 משפטים בעברית.\n"
+            "rating: מספר שלם 1-5 (1=גרוע, 5=מצוין).\n"
             "קריטריונים:\n"
-            "- revenue_growth: צמיחה שנתית, מגמה, יציבות הכנסות\n"
-            "- competitive_pos: חפיר תחרותי, נתח שוק, כוח תמחור\n"
+            "- revenue_growth: צמיחה שנתית לפי ביצועי מחיר שנה אחרונה, מגמה, יציבות הכנסות\n"
+            "- competitive_pos: חפיר תחרותי, נתח שוק, כוח תמחור — לפי P/E ו-ROE\n"
             "- leadership: ROE, ניהול חוב, הקצאת הון, מוניטין הנהלה\n"
-            "- market_timing: מומנטום מחיר, קרבה לשיא/שפל 52 שבוע, סנטימנט\n"
-            "- risk_assessment: תנודתיות (בטא), סיכון רגולטורי, ריכוז לקוחות"
+            "- market_timing: מומנטום (תשואה 1M/3M/1Y), קרבה לשיא/שפל 52 שבוע, סנטימנט אנליסטים\n"
+            "- risk_assessment: תנודתיות (בטא), סיכון רגולטורי, שורט, סיכון סקטורי"
         )
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
+            max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
         text  = msg.content[0].text.strip()
         start = text.find("{")
         end   = text.rfind("}") + 1
         if start >= 0 and end > start:
-            return _json.loads(text[start:end])
-    except Exception:
-        pass
-    return {}
+            parsed = _json.loads(text[start:end])
+            # Validate all 5 keys present
+            if all(k in parsed for k in ("revenue_growth", "competitive_pos",
+                                          "leadership", "market_timing", "risk_assessment")):
+                return parsed
+            return {"_error": "תגובת AI חסרת שדות — נסה שוב"}
+        return {"_error": f"JSON לא נמצא בתגובה: {text[:120]}"}
+    except Exception as exc:
+        return {"_error": str(exc)[:200]}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -85,9 +89,27 @@ def _build_data_summary(
 ) -> str:
     lines = [f"Ticker: {ticker}"]
     if prices:
-        lines.append(f"Price: ${prices['price']:.2f}, Change: {prices['change']:+.2f}%")
-        lines.append(f"52W High: ${prices['high_52w']:.2f}, Low: ${prices['low_52w']:.2f}")
+        cur   = prices["price"]
+        hi52  = prices["high_52w"]
+        lo52  = prices["low_52w"]
+        lines.append(f"Price: ${cur:.2f}, Daily Change: {prices['change']:+.2f}%")
+        lines.append(f"52W High: ${hi52:.2f} ({(cur - hi52) / hi52 * 100:+.1f}% from high), "
+                     f"Low: ${lo52:.2f} ({(cur - lo52) / lo52 * 100:+.1f}% from low)")
         lines.append(f"Beta: {prices['beta']:.2f}, Div Yield: {prices['div_yield']:.2f}%")
+        # 1-year price performance from history Series
+        hist = prices.get("history")
+        if hist is not None and len(hist) >= 2:
+            try:
+                ret_1y = (float(hist.iloc[-1]) / float(hist.iloc[0]) - 1) * 100
+                lines.append(f"1-Year Return: {ret_1y:+.1f}%")
+                if len(hist) >= 63:
+                    ret_3m = (float(hist.iloc[-1]) / float(hist.iloc[-63]) - 1) * 100
+                    lines.append(f"3-Month Return: {ret_3m:+.1f}%")
+                if len(hist) >= 21:
+                    ret_1m = (float(hist.iloc[-1]) / float(hist.iloc[-21]) - 1) * 100
+                    lines.append(f"1-Month Return: {ret_1m:+.1f}%")
+            except Exception:
+                pass
     if consensus:
         lines.append(
             f"Consensus: {consensus.get('label','N/A')} "
@@ -216,11 +238,22 @@ def _render_ticker_section(
         if claude_api_key:
             data_summary = _build_data_summary(ticker, p, con, tgt, fun)
             eval_result  = _run_five_filter_eval(ticker, data_summary, td_str, claude_api_key)
-        elif not claude_api_key:
-            st.caption("הוסף ANTHROPIC_API_KEY לקובץ .streamlit/secrets.toml לקבלת ניתוח AI.")
+            if "_error" in eval_result:
+                err_msg = eval_result["_error"]
+                st.warning(f"⚠️ שגיאת AI: {err_msg}")
+                if st.button("🔄 נסה שוב", key=f"_retry_{ticker}"):
+                    st.cache_data.clear()
+                    st.rerun()
+                eval_result = {}
+        else:
+            st.info("הוסף `ANTHROPIC_API_KEY` לקובץ `.streamlit/secrets.toml` לקבלת ניתוח AI.")
 
         # 5 filter cards (2-column pairs)
         total_score = 0
+        no_key_msg  = (
+            f'<span style="color:{COLOR["text_dim"]};font-size:12px">'
+            f'הוסף ANTHROPIC_API_KEY לניתוח AI.</span>'
+        )
         for i in range(0, len(_FILTERS), 2):
             pair = _FILTERS[i: i + 2]
             cols = st.columns(len(pair))
@@ -229,10 +262,7 @@ def _render_ticker_section(
                 rating  = int(fdata.get("rating", 0)) if fdata else 0
                 expl    = fdata.get("explanation", "") if fdata else ""
                 if not expl and not claude_api_key:
-                    expl = (
-                        f'<span style="color:{COLOR["text_dim"]};font-size:12px">'
-                        f'הוסף ANTHROPIC_API_KEY לניתוח AI.</span>'
-                    )
+                    expl = no_key_msg
                 total_score += rating
                 with col:
                     st.markdown(_filter_card_html(fname, ficon, rating, expl),

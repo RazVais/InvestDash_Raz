@@ -54,10 +54,10 @@ pip install -r requirements.txt
 ### 3. Add your Finnhub key (and optionally Claude key)
 Create (or edit) `.streamlit/secrets.toml`:
 ```toml
-FINNHUB_API_KEY = "your_finnhub_key_here"
-CLAUDE_API_KEY  = "your_claude_key_here"   # optional — enables AI daily briefs + 5-filter analysis
+FINNHUB_API_KEY  = "your_finnhub_key_here"
+ANTHROPIC_API_KEY = "your_claude_key_here"   # optional — enables AI daily briefs + 5-filter analysis
 ```
-The app runs without either key — Finnhub falls back to yfinance; Claude features show a prompt to add a key.
+The app runs without either key — Finnhub falls back to yfinance; Claude features show a prompt to add the key.
 
 ### 4. Run
 ```bash
