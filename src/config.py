@@ -39,6 +39,9 @@ TICKER_NAMES = {
 # Tickers with limited/no US analyst coverage — expected to have sparse data
 KNOWN_LIMITED_TICKERS = {"ESLT"}
 
+# ETFs in the portfolio — no P/E, ROE, EPS etc. (no earnings, no equity returns)
+PORTFOLIO_ETFS = {"VOO"}
+
 # Sector ETF benchmarks for relative-strength computation
 SECTOR_ETFS = {
     "Core (50%)":             "SPY",

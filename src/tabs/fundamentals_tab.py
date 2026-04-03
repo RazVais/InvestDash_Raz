@@ -5,7 +5,7 @@ from datetime import date
 
 import streamlit as st
 
-from src.config import COLOR, TICKER_NAMES
+from src.config import COLOR, PORTFOLIO_ETFS, TICKER_NAMES
 from src.data.analysts import get_eps_trend
 from src.portfolio import all_tickers
 from src.ui_helpers import color_legend, section_title, term_glossary
@@ -40,10 +40,21 @@ def _render_valuation_table(tickers, fundamentals, prices):
         rows = ""
         for t in tickers:
             f = fundamentals.get(t, {})
-            row = f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
-            for key, _ in cols:
-                val = f.get(key, "—")
-                row += f'<td style="{_TD}">{val}</td>'
+            if t in PORTFOLIO_ETFS:
+                # ETF: replace all data cells with a single spanning note
+                etf_note = (
+                    f'<span style="color:{COLOR["text_dim"]};font-size:11px">'
+                    f'ETF — אין נתוני פונדמנטלס (ללא רווחים עצמיים, ללא הון עצמי)</span>'
+                )
+                row = (
+                    f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
+                    f'<td colspan="{len(cols)}" style="{_TD}">{etf_note}</td>'
+                )
+            else:
+                row = f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
+                for key, _ in cols:
+                    val = f.get(key, "—")
+                    row += f'<td style="{_TD}">{val}</td>'
             rows += f"<tr>{row}</tr>"
 
         header_cells = (
