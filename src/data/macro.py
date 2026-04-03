@@ -14,24 +14,28 @@ _log = get_logger(__name__)
 def _fetch_one_macro(args):
     key, sym = args
     try:
-        hist = yf.Ticker(sym).history(period="5d")
+        hist = yf.Ticker(sym).history(period="7d")
         if not hist.empty:
             close = hist["Close"].dropna()
             if not close.empty:
-                return key, float(close.iloc[-1])
+                return key, float(close.iloc[-1]), close.tolist()[-7:]
         _log.warning("Macro indicator returned no data", extra={"key": key, "symbol": sym})
     except Exception:
         _log.error("Macro indicator fetch failed", exc_info=True, extra={"key": key, "symbol": sym})
-    return key, None
+    return key, None, []
 
 
 @st.cache_data(ttl=1800)
 def get_macro_indicators(trading_day):
-    """Return {vix, yield_10y, dxy} — latest available values, fetched in parallel."""
+    """Return {vix, yield_10y, dxy, vix_hist, yield_10y_hist, dxy_hist} — parallel fetch."""
     _log.info("get_macro_indicators entry", extra={"trading_day": trading_day})
     items = list(MACRO_SYMBOLS.items())
+    result = {}
     with ThreadPoolExecutor(max_workers=len(items)) as ex:
-        return dict(ex.map(_fetch_one_macro, items))
+        for key, val, hist_list in ex.map(_fetch_one_macro, items):
+            result[key]             = val
+            result[key + "_hist"]   = hist_list
+    return result
 
 
 def _fetch_one_commodity(args):
