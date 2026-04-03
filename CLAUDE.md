@@ -151,6 +151,7 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | 2026-03-29 | yfinance / rate limiting | Per-ticker `stock.history()` triggers separate Yahoo auth → Too Many Requests | Fixed: single `yf.download(all_tickers, group_by="ticker")` batch call |
 | 2026-04-03 | macro.py / empty macro data | `yf.download([symbols], ...)` for macro/commodity tickers returns MultiIndex columns that the parse logic silently fails on → VIX/10Y/DXY show "—" in sidebar | Fixed: rewrote `_fetch_one_macro` and `_fetch_one_commodity` to use per-symbol `yf.Ticker(sym).history()` in ThreadPoolExecutor |
 | 2026-04-03 | browser / crypto.randomUUID | Streamlit 1.43+ uses `crypto.randomUUID()` which requires a secure context (HTTPS or localhost); accessing via IP → `crypto.randomUUID is not a function` | Fixed: added `address = "localhost"` to `.streamlit/config.toml` |
+| 2026-04-03 | analysis_tab / anthropic missing | `anthropic` package listed in requirements.txt but not installed in venv → `No module named 'anthropic'` at runtime | Fixed: `pip install anthropic` in the venv |
 
 **Rule for Claude**: Every time a bug is caught or a feature is added, update the table above AND the Changelog below before finishing the task.
 
