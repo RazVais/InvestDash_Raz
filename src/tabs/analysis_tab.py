@@ -33,6 +33,30 @@ _RATING_TEXT_COLORS = {1: "#fff", 2: "#fff", 3: "#000", 4: "#000", 5: "#000"}
 
 # ── Claude evaluation (cached per ticker+day) ─────────────────────────────────
 
+_FILTER_KEYS = ("revenue_growth", "competitive_pos", "leadership", "market_timing", "risk_assessment")
+
+
+def _safe_parse_json(text: str) -> Optional[dict]:
+    """Extract and parse the first JSON object in text, tolerating minor formatting issues."""
+    start = text.find("{")
+    end   = text.rfind("}") + 1
+    if start < 0 or end <= start:
+        return None
+    raw = text[start:end]
+    # Try direct parse first
+    try:
+        return _json.loads(raw)
+    except _json.JSONDecodeError:
+        pass
+    # Strip trailing commas before } or ] (common LLM mistake)
+    import re
+    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
+    try:
+        return _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        return None
+
+
 @st.cache_data(ttl=3600)
 def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_api_key: str) -> dict:
     """Call Claude Haiku to rate 5 filters. Returns dict keyed by filter_key, or {"_error": msg}."""
@@ -40,40 +64,38 @@ def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_ap
         import anthropic
         client = anthropic.Anthropic(api_key=claude_api_key)
         prompt = (
-            f"נתח את המניה {ticker} לפי 5 פילטרים להשקעה. השתמש בנתוני השוק הבאים כולל ביצועי השנה האחרונה:\n"
+            f"Analyze stock {ticker} using the following market data:\n"
             f"{data_summary}\n\n"
-            "החזר JSON בלבד (ללא טקסט לפניו או אחריו):\n"
-            '{\n'
-            '  "revenue_growth":    {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
-            '  "competitive_pos":   {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
-            '  "leadership":        {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
-            '  "market_timing":     {"rating": 3, "explanation": "2-3 משפטים בעברית"},\n'
-            '  "risk_assessment":   {"rating": 3, "explanation": "2-3 משפטים בעברית"}\n'
-            '}\n\n'
-            "rating: מספר שלם 1-5 (1=גרוע, 5=מצוין).\n"
-            "קריטריונים:\n"
-            "- revenue_growth: צמיחה שנתית לפי ביצועי מחיר שנה אחרונה, מגמה, יציבות הכנסות\n"
-            "- competitive_pos: חפיר תחרותי, נתח שוק, כוח תמחור — לפי P/E ו-ROE\n"
-            "- leadership: ROE, ניהול חוב, הקצאת הון, מוניטין הנהלה\n"
-            "- market_timing: מומנטום (תשואה 1M/3M/1Y), קרבה לשיא/שפל 52 שבוע, סנטימנט אנליסטים\n"
-            "- risk_assessment: תנודתיות (בטא), סיכון רגולטורי, שורט, סיכון סקטורי"
+            "Return ONLY a JSON object — no text before or after it. "
+            "Do not use quotes inside explanation values. Use only simple sentences.\n\n"
+            "Format:\n"
+            '{"revenue_growth":{"rating":3,"explanation":"text"},'
+            '"competitive_pos":{"rating":3,"explanation":"text"},'
+            '"leadership":{"rating":3,"explanation":"text"},'
+            '"market_timing":{"rating":3,"explanation":"text"},'
+            '"risk_assessment":{"rating":3,"explanation":"text"}}\n\n'
+            "Rules:\n"
+            "- rating is an integer 1-5 (1=very poor, 5=excellent)\n"
+            "- explanation is 2 sentences in Hebrew, NO quotation marks inside the text\n"
+            "- revenue_growth: annual growth from 1Y price return, revenue trend, stability\n"
+            "- competitive_pos: moat, market share, pricing power — use P/E and ROE\n"
+            "- leadership: ROE, debt management, capital allocation, management track record\n"
+            "- market_timing: momentum (1M/3M/1Y returns), distance from 52W high/low, analyst sentiment\n"
+            "- risk_assessment: volatility (beta), regulatory risk, short interest, sector risk"
         )
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
-        text  = msg.content[0].text.strip()
-        start = text.find("{")
-        end   = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            parsed = _json.loads(text[start:end])
-            # Validate all 5 keys present
-            if all(k in parsed for k in ("revenue_growth", "competitive_pos",
-                                          "leadership", "market_timing", "risk_assessment")):
-                return parsed
-            return {"_error": "תגובת AI חסרת שדות — נסה שוב"}
-        return {"_error": f"JSON לא נמצא בתגובה: {text[:120]}"}
+        text   = msg.content[0].text.strip()
+        parsed = _safe_parse_json(text)
+        if parsed is None:
+            return {"_error": f"JSON לא תקין בתגובת AI: {text[:150]}"}
+        if all(k in parsed for k in _FILTER_KEYS):
+            return parsed
+        missing = [k for k in _FILTER_KEYS if k not in parsed]
+        return {"_error": f"חסרים שדות בתגובה: {missing}"}
     except Exception as exc:
         return {"_error": str(exc)[:200]}
 
