@@ -36,6 +36,9 @@ coverage.xml
 *.swo
 .vscode/settings.json
 
+# Claude Code
+.claude/
+
 # Ruff / Black cache
 .ruff_cache/
 
