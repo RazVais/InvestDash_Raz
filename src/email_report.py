@@ -13,6 +13,7 @@ from email.mime.text import MIMEText
 import smtplib
 import threading
 from typing import Optional
+
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.logger import get_logger

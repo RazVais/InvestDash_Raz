@@ -194,7 +194,7 @@ def _card_ai_html(ticker, label, total, upside_str, bad_flags, alpha, alpha_str,
         return ""
     bullets = "".join(
         f'<div style="margin-bottom:4px">• {ln}</div>'
-        for ln in (l.strip() for l in brief_text.split("\n")) if ln
+        for ln in (line.strip() for line in brief_text.split("\n")) if ln
     )
     return (
         f'<div style="margin-top:10px;padding:10px 12px;'

@@ -9,7 +9,6 @@ from src.data.technicals import bollinger, compute_relative_strength, compute_rs
 from src.portfolio import all_tickers
 from src.ui_helpers import color_legend, term_glossary
 
-
 # ── Chart-building helpers ────────────────────────────────────────────────────
 
 def _build_main_figure(ohlcv, sel, show_rsi):
