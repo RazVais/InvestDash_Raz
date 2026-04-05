@@ -211,16 +211,12 @@ def _kpi_card_html(label, value, sub, sub_color):
     )
 
 
-# ── KPI header ────────────────────────────────────────────────────────────────
+# ── KPI header helpers ────────────────────────────────────────────────────────
 
-def _render_kpi_header(portfolio, data, n_triggered, n_watch):
-    """Four KPI cards: Portfolio Value | P&L | Alpha vs VOO | Alert bell."""
-    prices = data.get("prices", {})
-
-    # ── Compute portfolio totals ──────────────────────────────────────────
+def _compute_portfolio_totals(portfolio, prices):
+    """Return (total_cost, total_value, value_by_ticker)."""
     total_cost = total_value = 0.0
     value_by_ticker = {}
-
     for ticker in all_tickers(portfolio):
         p = prices.get(ticker)
         if not p:
@@ -236,12 +232,11 @@ def _render_kpi_header(portfolio, data, n_triggered, n_watch):
             total_value  += shares * p["price"]
             ticker_value += shares * p["price"]
         value_by_ticker[ticker] = ticker_value
+    return total_cost, total_value, value_by_ticker
 
-    # P&L
-    pnl     = total_value - total_cost
-    pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0.0
 
-    # ── Alpha vs VOO (1-month) ────────────────────────────────────────────
+def _compute_alpha(prices, value_by_ticker, total_value):
+    """Return (portfolio_1m_pct, voo_1m_pct)."""
     portfolio_1m = 0.0
     if total_value > 0:
         for ticker, val in value_by_ticker.items():
@@ -256,7 +251,6 @@ def _render_kpi_header(portfolio, data, n_triggered, n_watch):
                 portfolio_1m += t_ret * (val / total_value)
             except Exception:
                 pass
-
     voo_1m = 0.0
     voo_p  = prices.get("VOO")
     if voo_p:
@@ -264,13 +258,42 @@ def _render_kpi_header(portfolio, data, n_triggered, n_watch):
         if hist is not None and len(hist) >= 21:
             with contextlib.suppress(Exception):
                 voo_1m = (float(hist.iloc[-1]) / float(hist.iloc[-21]) - 1) * 100
+    return portfolio_1m, voo_1m
 
+
+def _render_bell(n_triggered, n_watch):
+    """Render the alert bell button column."""
+    if n_triggered > 0:
+        bell_label, bell_css = f"🔔  {n_triggered}", "bell-red"
+        bell_tip = f"{n_triggered} דגלים מופעלים — לחץ לפרטים"
+    elif n_watch > 0:
+        bell_label, bell_css = f"🔔  {n_watch}", "bell-yellow"
+        bell_tip = f"{n_watch} דגלי מעקב — לחץ לפרטים"
+    else:
+        bell_label, bell_css, bell_tip = "🔔", "bell-ok", "כל הדגלים תקינים"
+    st.markdown(f'<div class="{bell_css}">', unsafe_allow_html=True)
+    if st.button(bell_label, key="_bell_btn", help=bell_tip, use_container_width=True):
+        st.session_state.active_tab = "דגלים אדומים"
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ── KPI header ────────────────────────────────────────────────────────────────
+
+def _render_kpi_header(portfolio, data, n_triggered, n_watch):
+    """Four KPI cards: Portfolio Value | P&L | Alpha vs VOO | Alert bell."""
+    prices = data.get("prices", {})
+
+    total_cost, total_value, value_by_ticker = _compute_portfolio_totals(portfolio, prices)
+    pnl     = total_value - total_cost
+    pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0.0
+
+    portfolio_1m, voo_1m = _compute_alpha(prices, value_by_ticker, total_value)
     alpha       = portfolio_1m - voo_1m
     alpha_color = COLOR["positive"] if alpha >= 0 else COLOR["negative"]
     alpha_str   = f"{alpha:+.2f}%" if total_value > 0 else "—"
     alpha_sub   = f"תיק {portfolio_1m:+.1f}% | VOO {voo_1m:+.1f}%" if total_value > 0 else "30 יום"
 
-    # ── Render four columns ───────────────────────────────────────────────
     col_v, col_pnl, col_alpha, col_bell = st.columns([3, 2, 2, 1])
 
     with col_v:
@@ -291,25 +314,7 @@ def _render_kpi_header(portfolio, data, n_triggered, n_watch):
                     unsafe_allow_html=True)
 
     with col_bell:
-        if n_triggered > 0:
-            bell_label = f"🔔  {n_triggered}"
-            bell_css   = "bell-red"
-            bell_tip   = f"{n_triggered} דגלים מופעלים — לחץ לפרטים"
-        elif n_watch > 0:
-            bell_label = f"🔔  {n_watch}"
-            bell_css   = "bell-yellow"
-            bell_tip   = f"{n_watch} דגלי מעקב — לחץ לפרטים"
-        else:
-            bell_label = "🔔"
-            bell_css   = "bell-ok"
-            bell_tip   = "כל הדגלים תקינים"
-
-        st.markdown(f'<div class="{bell_css}">', unsafe_allow_html=True)
-        if st.button(bell_label, key="_bell_btn",
-                     help=bell_tip, use_container_width=True):
-            st.session_state.active_tab = "דגלים אדומים"
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+        _render_bell(n_triggered, n_watch)
 
 
 # ── Secondary tab bar ─────────────────────────────────────────────────────────
@@ -362,79 +367,203 @@ def _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg):
         _log.info("Auto-alert sent", extra={"flags": [f["ticker"] for f in newly_triggered]})
 
 
+# ── Email section helpers ─────────────────────────────────────────────────────
+
+def _render_recipient_list(portfolio, recipients):
+    """Render the recipient list with add/remove controls. Returns updated list."""
+    st.markdown(
+        f'<div dir="rtl" style="font-size:12px;font-weight:700;'
+        f'color:{COLOR["primary"]};margin-bottom:6px">כתובות מייל</div>',
+        unsafe_allow_html=True,
+    )
+    for i, email in enumerate(recipients):
+        col_addr, col_del = st.columns([4, 1])
+        col_addr.caption(email)
+        if col_del.button("✕", key=f"_del_email_{i}", help="הסר"):
+            recipients.pop(i)
+            set_email_recipients(portfolio, recipients)
+            st.rerun()
+
+    new_email = st.text_input(
+        "הוסף כתובת", placeholder="user@example.com",
+        key="_new_email_input", label_visibility="collapsed",
+    ).strip()
+    if st.button("➕ הוסף", key="_add_email_btn", use_container_width=True):
+        if new_email and "@" in new_email and new_email not in recipients:
+            recipients.append(new_email)
+            set_email_recipients(portfolio, recipients)
+            st.success(f"נוסף: {new_email}")
+            st.rerun()
+        elif new_email in recipients:
+            st.warning("כתובת זו כבר קיימת.")
+        else:
+            st.error("כתובת לא תקינה.")
+
+
+def _render_send_controls(portfolio, data, flag_statuses, td_str, recipients, smtp_cfg, settings):
+    """Render auto-alert toggle + send/test buttons."""
+    configured = smtp_configured(smtp_cfg)
+    auto_on = st.toggle(
+        "🔔 שלח התרעה אוטומטית בדגל חדש",
+        value=bool(settings.get("auto_alert", False)),
+        key="_auto_alert_toggle",
+        disabled=not configured,
+        help="שולח מייל מיידי כשדגל עובר למצב מופעל" if configured
+             else "הגדר SMTP ב-secrets.toml תחילה",
+    )
+    if auto_on != settings.get("auto_alert", False):
+        set_auto_alert(portfolio, auto_on)
+
+    if not configured:
+        st.caption("⚙️ הוסף SMTP_HOST / SMTP_USER / SMTP_PASSWORD לקובץ .streamlit/secrets.toml")
+    elif not recipients:
+        st.caption("הוסף כתובת מייל לשליחה.")
+    else:
+        if st.button("📤 שלח דוח עכשיו", key="_send_digest_btn", use_container_width=True):
+            with st.spinner("📨 שולח..."):
+                ok = send_digest_sync(portfolio, data, flag_statuses, td_str, recipients, smtp_cfg)
+            if ok:
+                st.success("✅ נשלח בהצלחה")
+            else:
+                st.error("❌ שליחה נכשלה — בדוק הגדרות SMTP")
+        if st.button("🔧 בדוק SMTP", key="_test_smtp_btn", use_container_width=True):
+            err = test_smtp(smtp_cfg, recipients[0])
+            if err:
+                st.error(err)
+            else:
+                st.success(f"✅ מייל בדיקה נשלח ל-{recipients[0]}")
+
+
 # ── Email section ─────────────────────────────────────────────────────────────
 
 def _render_email_section(portfolio, data, flag_statuses, td_str, smtp_cfg):
     """Sidebar expander: manage recipients, send digest, SMTP test."""
     settings   = get_email_settings(portfolio)
     recipients = list(settings.get("email_recipients", []))
-    configured = smtp_configured(smtp_cfg)
-
     with st.expander("📧 דוח במייל", expanded=False):
+        _render_recipient_list(portfolio, recipients)
+        st.divider()
+        _render_send_controls(portfolio, data, flag_statuses, td_str, recipients, smtp_cfg, settings)
+
+
+# ── Sidebar helpers ───────────────────────────────────────────────────────────
+
+def _macro_color(key, val):
+    """Return color string for a macro indicator value."""
+    if val is None:
+        return COLOR["text_dim"]
+    if key == "vix":
+        return COLOR["negative"] if val >= 30 else (
+            COLOR["warning"] if val >= 20 else COLOR["positive"])
+    if key == "yield_10y":
+        return COLOR["negative"] if val >= 4.5 else (
+            COLOR["warning"] if val >= 4.0 else COLOR["positive"])
+    return COLOR["text_dim"]
+
+
+def _macro_hint(key, val):
+    """Return short Hebrew hint for a macro indicator value."""
+    if val is None:
+        return ""
+    if key == "vix":
+        if val >= 30:
+            return "פחד גבוה"
+        if val >= 20:
+            return "מתח מתון"
+        return "שוק רגוע"
+    if key == "yield_10y":
+        if val >= 4.5:
+            return "לחץ על צמיחה"
+        if val >= 4.0:
+            return "מעקב נדרש"
+        return "סביבה נוחה"
+    if key == "dxy":
+        if val >= 105:
+            return "דולר חזק"
+        if val <= 98:
+            return "דולר חלש"
+        return "ניטרלי"
+    return ""
+
+
+def _render_sidebar_nav():
+    """Render the primary navigation buttons."""
+    st.markdown(
+        '<div dir="rtl" style="font-size:10px;color:#888;font-weight:700;'
+        'letter-spacing:1px;margin-bottom:6px">ניווט</div>',
+        unsafe_allow_html=True,
+    )
+    for label in _SIDEBAR_TABS:
+        icon      = _SIDEBAR_ICONS.get(label, "")
+        is_active = st.session_state.active_tab == label
+        css_class = "sidebar-nav-active" if is_active else "sidebar-nav-item"
+        st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+        if st.button(f"{icon}  {label}", key=f"_nav_{label}", use_container_width=True):
+            st.session_state.active_tab = label
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_macro_watchlist(macro):
+    """Render VIX / 10Y / DXY rows with sparklines."""
+    st.markdown(
+        '<div dir="rtl" style="font-size:10px;color:#888;font-weight:700;'
+        'letter-spacing:1px;margin-bottom:8px">מאקרו</div>',
+        unsafe_allow_html=True,
+    )
+    for lbl, key, suffix in [("VIX", "vix", ""), ("10Y", "yield_10y", "%"), ("DXY", "dxy", "")]:
+        val     = macro.get(key)
+        hist    = macro.get(key + "_hist", [])
+        val_str = f"{val:.2f}{suffix}" if val is not None else "—"
+        color   = _macro_color(key, val)
+        hint    = _macro_hint(key, val)
+        spark   = _sparkline_svg(hist)
         st.markdown(
-            f'<div dir="rtl" style="font-size:12px;font-weight:700;'
-            f'color:{COLOR["primary"]};margin-bottom:6px">כתובות מייל</div>',
+            f'<div dir="rtl" style="display:flex;justify-content:space-between;'
+            f'align-items:center;padding:5px 0;border-bottom:1px solid #1a1f2e">'
+            f'  <span style="font-size:11px;color:{COLOR["text_dim"]};min-width:28px">{lbl}</span>'
+            f'  <span style="flex:1;padding:0 8px">{spark}</span>'
+            f'  <div style="text-align:right">'
+            f'    <span style="font-size:12px;font-weight:700;color:{color}">{val_str}</span>'
+            + (f'<br><span style="font-size:9px;color:{COLOR["text_dim"]}">{hint}</span>' if hint else "")
+            + '  </div></div>',
             unsafe_allow_html=True,
         )
-        for i, email in enumerate(recipients):
-            col_addr, col_del = st.columns([4, 1])
-            col_addr.caption(email)
-            if col_del.button("✕", key=f"_del_email_{i}", help="הסר"):
-                recipients.pop(i)
-                set_email_recipients(portfolio, recipients)
+
+
+def _render_sidebar_tools(market_state):
+    """Render the bottom 3-icon tool row (refresh, email toggle, exit)."""
+    is_trading_day = market_state.get("is_trading_day", False)
+    col_r, col_e, col_x = st.columns(3)
+    with col_r:
+        if is_trading_day:
+            if st.button("🔄", key="_sb_refresh", use_container_width=True, help="רענן נתונים"):
+                st.cache_data.clear()
                 st.rerun()
-
-        new_email = st.text_input(
-            "הוסף כתובת", placeholder="user@example.com",
-            key="_new_email_input", label_visibility="collapsed",
-        ).strip()
-        if st.button("➕ הוסף", key="_add_email_btn", use_container_width=True):
-            if new_email and "@" in new_email and new_email not in recipients:
-                recipients.append(new_email)
-                set_email_recipients(portfolio, recipients)
-                st.success(f"נוסף: {new_email}")
-                st.rerun()
-            elif new_email in recipients:
-                st.warning("כתובת זו כבר קיימת.")
-            else:
-                st.error("כתובת לא תקינה.")
-
-        st.divider()
-
-        auto_on = st.toggle(
-            "🔔 שלח התרעה אוטומטית בדגל חדש",
-            value=bool(settings.get("auto_alert", False)),
-            key="_auto_alert_toggle",
-            disabled=not configured,
-            help="שולח מייל מיידי כשדגל עובר למצב מופעל" if configured
-                 else "הגדר SMTP ב-secrets.toml תחילה",
-        )
-        if auto_on != settings.get("auto_alert", False):
-            set_auto_alert(portfolio, auto_on)
-
-        if not configured:
-            st.caption("⚙️ הוסף SMTP_HOST / SMTP_USER / SMTP_PASSWORD לקובץ .streamlit/secrets.toml")
-        elif not recipients:
-            st.caption("הוסף כתובת מייל לשליחה.")
         else:
-            if st.button("📤 שלח דוח עכשיו", key="_send_digest_btn",
-                         use_container_width=True):
-                with st.spinner("📨 שולח..."):
-                    ok = send_digest_sync(
-                        portfolio, data, flag_statuses, td_str, recipients, smtp_cfg
-                    )
-                if ok:
-                    st.success("✅ נשלח בהצלחה")
-                else:
-                    st.error("❌ שליחה נכשלה — בדוק הגדרות SMTP")
+            st.button("🔄", key="_sb_refresh", use_container_width=True,
+                      disabled=True, help="השוק סגור — משתמשים בנתונים השמורים")
+    with col_e:
+        if st.button("📧", key="_sb_email_toggle", use_container_width=True, help="דוח במייל"):
+            st.session_state["_email_open"] = not st.session_state.get("_email_open", False)
+            st.rerun()
+    with col_x:
+        if st.button("🔴", key="_sb_exit", use_container_width=True, help="סגור את האפליקציה"):
+            stc.html(
+                """<script>
+                try { window.top.close(); } catch(e) {}
+                try { window.open('', '_self', '').close(); } catch(e) {}
+                </script>""",
+                height=0,
+            )
+            st.sidebar.info("האפליקציה נסגרת... ניתן לסגור את הדפדפן.")
 
-            if st.button("🔧 בדוק SMTP", key="_test_smtp_btn",
-                         use_container_width=True):
-                err = test_smtp(smtp_cfg, recipients[0])
-                if err:
-                    st.error(err)
-                else:
-                    st.success(f"✅ מייל בדיקה נשלח ל-{recipients[0]}")
+            def _shutdown():
+                time.sleep(1.2)
+                os._exit(0)
+
+            threading.Thread(target=_shutdown, daemon=True).start()
+            st.stop()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -445,7 +574,6 @@ def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=
         st.session_state.active_tab = _ALL_TABS[0]
 
     with st.sidebar:
-        # ── Logo + market badge ───────────────────────────────────────────
         st.markdown(
             '<div dir="rtl" style="font-size:16px;font-weight:800;color:#ffffff;'
             'letter-spacing:0.3px;margin-bottom:4px">📊 RazDashboard</div>',
@@ -455,149 +583,32 @@ def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=
         st.caption(fmt_trading_day(market_state))
         st.divider()
 
-        # ── Primary navigation ────────────────────────────────────────────
-        st.markdown(
-            '<div dir="rtl" style="font-size:10px;color:#888;font-weight:700;'
-            'letter-spacing:1px;margin-bottom:6px">ניווט</div>',
-            unsafe_allow_html=True,
-        )
-        for label in _SIDEBAR_TABS:
-            icon      = _SIDEBAR_ICONS.get(label, "")
-            is_active = st.session_state.active_tab == label
-            css_class = "sidebar-nav-active" if is_active else "sidebar-nav-item"
-            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-            if st.button(f"{icon}  {label}", key=f"_nav_{label}", use_container_width=True):
-                st.session_state.active_tab = label
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
+        _render_sidebar_nav()
         st.divider()
 
-        # ── Macro watchlist with sparklines ───────────────────────────────
-        st.markdown(
-            '<div dir="rtl" style="font-size:10px;color:#888;font-weight:700;'
-            'letter-spacing:1px;margin-bottom:8px">מאקרו</div>',
-            unsafe_allow_html=True,
-        )
-
-        macro = data.get("macro", {})
-
-        def _macro_color(key, val):
-            if val is None:
-                return COLOR["text_dim"]
-            if key == "vix":
-                return COLOR["negative"] if val >= 30 else (
-                    COLOR["warning"] if val >= 20 else COLOR["positive"])
-            if key == "yield_10y":
-                return COLOR["negative"] if val >= 4.5 else (
-                    COLOR["warning"] if val >= 4.0 else COLOR["positive"])
-            return COLOR["text_dim"]
-
-        def _macro_hint(key, val):
-            if val is None:
-                return ""
-            if key == "vix":
-                if val >= 30:
-                    return "פחד גבוה"
-                if val >= 20:
-                    return "מתח מתון"
-                return "שוק רגוע"
-            if key == "yield_10y":
-                if val >= 4.5:
-                    return "לחץ על צמיחה"
-                if val >= 4.0:
-                    return "מעקב נדרש"
-                return "סביבה נוחה"
-            if key == "dxy":
-                if val >= 105:
-                    return "דולר חזק"
-                if val <= 98:
-                    return "דולר חלש"
-                return "ניטרלי"
-            return ""
-
-        for lbl, key, suffix in [
-            ("VIX", "vix",       ""),
-            ("10Y", "yield_10y", "%"),
-            ("DXY", "dxy",       ""),
-        ]:
-            val      = macro.get(key)
-            hist     = macro.get(key + "_hist", [])
-            val_str  = f"{val:.2f}{suffix}" if val is not None else "—"
-            color    = _macro_color(key, val)
-            hint     = _macro_hint(key, val)
-            spark    = _sparkline_svg(hist)
-
-            st.markdown(
-                f'<div dir="rtl" style="display:flex;justify-content:space-between;'
-                f'align-items:center;padding:5px 0;border-bottom:1px solid #1a1f2e">'
-                f'  <span style="font-size:11px;color:{COLOR["text_dim"]};min-width:28px">{lbl}</span>'
-                f'  <span style="flex:1;padding:0 8px">{spark}</span>'
-                f'  <div style="text-align:right">'
-                f'    <span style="font-size:12px;font-weight:700;color:{color}">{val_str}</span>'
-                + (f'<br><span style="font-size:9px;color:{COLOR["text_dim"]}">{hint}</span>' if hint else "")
-                + '  </div>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-
+        _render_macro_watchlist(data.get("macro", {}))
         st.divider()
 
-        # ── Bottom tools row ──────────────────────────────────────────────
-        is_trading_day = market_state.get("is_trading_day", False)
-        col_r, col_e, col_x = st.columns(3)
+        _render_sidebar_tools(market_state)
 
-        with col_r:
-            if is_trading_day:
-                if st.button("🔄", key="_sb_refresh", use_container_width=True,
-                             help="רענן נתונים"):
-                    st.cache_data.clear()
-                    st.rerun()
-            else:
-                st.button("🔄", key="_sb_refresh", use_container_width=True,
-                          disabled=True, help="השוק סגור — משתמשים בנתונים השמורים")
-
-        with col_e:
-            # Toggle email expander visibility
-            if st.button("📧", key="_sb_email_toggle", use_container_width=True,
-                         help="דוח במייל"):
-                st.session_state["_email_open"] = not st.session_state.get("_email_open", False)
-                st.rerun()
-
-        with col_x:
-            if st.button("🔴", key="_sb_exit", use_container_width=True,
-                         help="סגור את האפליקציה"):
-                stc.html(
-                    """<script>
-                    try { window.top.close(); } catch(e) {}
-                    try { window.open('', '_self', '').close(); } catch(e) {}
-                    </script>""",
-                    height=0,
-                )
-                st.sidebar.info("האפליקציה נסגרת... ניתן לסגור את הדפדפן.")
-
-                def _shutdown():
-                    time.sleep(1.2)
-                    os._exit(0)
-
-                threading.Thread(target=_shutdown, daemon=True).start()
-                st.stop()
-
-        # Email section — shown when toggle is on
         if st.session_state.get("_email_open", False):
             _render_email_section(portfolio, data, flag_statuses or [], td_str, smtp_cfg or {})
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main helpers ──────────────────────────────────────────────────────────────
 
-def main():
-    portfolio    = load_portfolio()
-    market_state = get_market_state()
-    td_str       = market_state["last_trading_day"].isoformat()
-    market_open  = market_state.get("is_open", False)
+_TAB_SLOW = {
+    "פונדמנטלס":   {"fundamentals", "earnings"},
+    "חדשות":        {"news"},
+    "אנליסטים":     {"targets", "upgrades"},
+    "דגלים אדומים": {"upgrades", "commodities"},
+    "סקירה":        {"targets"},
+    "גרפים":        {"targets"},
+}
 
-    _log.info("Dashboard starting", extra={"trading_day": td_str, "market_open": market_open})
 
+def _load_secrets():
+    """Load API keys and SMTP config from st.secrets. Returns (api_key, claude_key, smtp_cfg)."""
     try:
         api_key        = st.secrets.get("FINNHUB_API_KEY", "")
         claude_api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
@@ -607,51 +618,16 @@ def main():
             "user":     st.secrets.get("SMTP_USER", ""),
             "password": st.secrets.get("SMTP_PASSWORD", ""),
         }
+        return api_key, claude_api_key, smtp_cfg
     except Exception:
-        api_key        = ""
-        claude_api_key = ""
-        smtp_cfg       = {}
+        return "", "", {}
 
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = _ALL_TABS[0]
-    active = st.session_state.active_tab
 
-    data = load_all_data(portfolio, market_state, api_key, active_tab=active)
-
-    # ── Auto-alert ────────────────────────────────────────────────────────
-    flag_statuses  = get_all_flag_statuses(portfolio, data)
-    n_triggered, n_watch = get_flag_summary(portfolio, data)
-    _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg)
-
-    # ── Sidebar ───────────────────────────────────────────────────────────
-    _render_sidebar(portfolio, data, market_state, smtp_cfg, flag_statuses, td_str)
-
-    # ── Slim title bar ────────────────────────────────────────────────────
-    st.markdown(
-        '<div dir="rtl" style="font-size:11px;color:#555;margin-bottom:8px">'
-        'תיק ה-AI &amp; תשתיות &nbsp;·&nbsp; Yahoo Finance · Finviz · Finnhub'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── KPI header ────────────────────────────────────────────────────────
-    _render_kpi_header(portfolio, data, n_triggered, n_watch)
-
-    # ── Secondary tab bar ─────────────────────────────────────────────────
-    _render_secondary_tab_bar()
-
-    # ── Deferred-data banner ──────────────────────────────────────────────
-    _TAB_SLOW = {
-        "פונדמנטלס":    {"fundamentals", "earnings"},
-        "חדשות":         {"news"},
-        "אנליסטים":      {"targets", "upgrades"},
-        "דגלים אדומים":  {"upgrades", "commodities"},
-        "סקירה":         {"targets"},
-        "גרפים":         {"targets"},
-    }
-    _deferred    = data.get("_deferred", frozenset())
-    _tab_missing = _TAB_SLOW.get(active, set()) & _deferred
-    if _tab_missing:
+def _render_deferred_banner(active, data):
+    """Show a refresh banner when the active tab has data still loading in background."""
+    deferred    = data.get("_deferred", frozenset())
+    tab_missing = _TAB_SLOW.get(active, set()) & deferred
+    if tab_missing:
         col_msg, col_btn = st.columns([6, 1])
         with col_msg:
             st.caption("📡 חלק מהנתונים עדיין בטעינת רקע — לחץ רענן לעדכון מיידי")
@@ -660,7 +636,9 @@ def main():
                 st.cache_data.clear()
                 st.rerun()
 
-    # ── Tab content ───────────────────────────────────────────────────────
+
+def _render_tab_content(active, portfolio, data, market_state, td_str, api_key, claude_api_key):
+    """Route to the correct tab renderer based on active tab name."""
     if active == "סקירה":
         render_overview(portfolio, data, market_state, td_str)
     elif active == "תיק שלי":
@@ -681,6 +659,42 @@ def main():
         render_daily_brief(portfolio, data, td_str, claude_api_key)
     elif active == "🔬 ניתוח":
         render_analysis(portfolio, data, td_str, api_key, claude_api_key)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    portfolio    = load_portfolio()
+    market_state = get_market_state()
+    td_str       = market_state["last_trading_day"].isoformat()
+    market_open  = market_state.get("is_open", False)
+    _log.info("Dashboard starting", extra={"trading_day": td_str, "market_open": market_open})
+
+    api_key, claude_api_key, smtp_cfg = _load_secrets()
+
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = _ALL_TABS[0]
+    active = st.session_state.active_tab
+
+    data = load_all_data(portfolio, market_state, api_key, active_tab=active)
+
+    flag_statuses        = get_all_flag_statuses(portfolio, data)
+    n_triggered, n_watch = get_flag_summary(portfolio, data)
+    _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg)
+
+    _render_sidebar(portfolio, data, market_state, smtp_cfg, flag_statuses, td_str)
+
+    st.markdown(
+        '<div dir="rtl" style="font-size:11px;color:#555;margin-bottom:8px">'
+        'תיק ה-AI &amp; תשתיות &nbsp;·&nbsp; Yahoo Finance · Finviz · Finnhub'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    _render_kpi_header(portfolio, data, n_triggered, n_watch)
+    _render_secondary_tab_bar()
+    _render_deferred_banner(active, data)
+    _render_tab_content(active, portfolio, data, market_state, td_str, api_key, claude_api_key)
 
 
 if __name__ == "__main__":

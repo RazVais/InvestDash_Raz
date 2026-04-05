@@ -141,6 +141,70 @@ def _sort_tickers_by_flag(tickers, all_flags):
     return sorted(tickers, key=lambda t: (ticker_severity.get(t, 2), t))
 
 
+# ── Card HTML builders ────────────────────────────────────────────────────────
+
+def _card_actions_html(upgrades, ticker):
+    """Build HTML for recent analyst action pills."""
+    upg_df  = upgrades.get(ticker)
+    actions = _filter_recent_actions(upg_df, days=30)
+    if not actions.empty:
+        pill_html = "".join(
+            _action_pill(str(row.get("action", "")), str(row.get("to_grade", "")), str(row.get("firm", "")))
+            for _, row in actions.iterrows()
+        )
+        return f'<div style="margin-top:4px">{pill_html}</div>'
+    return (
+        f'<div style="font-size:11px;color:{COLOR["text_dim"]};margin-top:4px">'
+        f'אין שינויים אחרונים</div>'
+    )
+
+
+def _card_flags_html(ticker, all_flags):
+    """Build HTML for the flag status row."""
+    ticker_flags = [f for f in all_flags if f["ticker"] == ticker and not str(f["ticker"]).startswith("🗂")]
+    if not ticker_flags:
+        return f'<span style="color:{COLOR["dim"]};font-size:11px">⚫ אין נתונים</span>'
+    bad_flags = [f for f in ticker_flags if f["status"] in ("triggered", "watch")]
+    if bad_flags:
+        parts = []
+        for f in bad_flags:
+            icon = "🔴" if f["status"] == "triggered" else "🟡"
+            col  = COLOR["negative"] if f["status"] == "triggered" else COLOR["warning"]
+            parts.append(f'<span style="color:{col};font-size:11px;margin-left:8px">{icon} {f["flag"]}</span>')
+        return "".join(parts)
+    nodata = [f for f in ticker_flags if f["status"] == "nodata"]
+    if nodata:
+        return f'<span style="color:{COLOR["dim"]};font-size:11px">⚫ אין נתונים</span>'
+    return f'<span style="color:{COLOR["positive"]};font-size:11px">🟢 תקין</span>'
+
+
+def _card_ai_html(ticker, label, total, upside_str, bad_flags, alpha, alpha_str, td_str, claude_api_key):
+    """Build the optional AI brief section HTML."""
+    if not claude_api_key:
+        return ""
+    brief_data_lines = [f"קונצנזוס: {label} ({total} אנליסטים)"]
+    if upside_str != "—":
+        brief_data_lines.append(f"אפסייד: {upside_str}")
+    if bad_flags:
+        brief_data_lines.append(f"דגלים: {', '.join(f['flag'] for f in bad_flags)}")
+    if alpha is not None:
+        brief_data_lines.append(f"אלפא חודשי vs VOO: {alpha_str}")
+    brief_text = _generate_ticker_brief(ticker, "\n".join(brief_data_lines), td_str, claude_api_key)
+    if not brief_text:
+        return ""
+    bullets = "".join(
+        f'<div style="margin-bottom:4px">• {ln}</div>'
+        for ln in (l.strip() for l in brief_text.split("\n")) if ln
+    )
+    return (
+        f'<div style="margin-top:10px;padding:10px 12px;'
+        f'background:#0a1a11;border:1px solid {COLOR["primary"]}33;'
+        f'border-radius:6px;font-size:11px;color:#d0e8da;line-height:1.7">'
+        f'<div style="font-size:10px;color:{COLOR["primary"]};font-weight:600;margin-bottom:6px">🤖 סיכום AI</div>'
+        f'{bullets}</div>'
+    )
+
+
 # ── Card renderer ─────────────────────────────────────────────────────────────
 
 def _render_card(
@@ -160,10 +224,9 @@ def _render_card(
     p_data = prices.get(ticker)
     con    = consensus.get(ticker) or {}
     tgt    = targets.get(ticker)
+    name   = TICKER_NAMES.get(ticker, ticker)
 
-    name = TICKER_NAMES.get(ticker, ticker)
-
-    # ── Price & change ────────────────────────────────────────────────────────
+    # Price & change
     if p_data:
         price      = p_data.get("price", 0.0)
         change_pct = p_data.get("change", 0.0)
@@ -172,126 +235,39 @@ def _render_card(
         change_col = _change_color(change_pct)
         history    = p_data.get("history")
     else:
-        price      = 0.0
-        price_str  = "—"
-        change_str = "—"
-        change_col = COLOR["neutral"]
-        history    = None
+        price = 0.0
+        price_str, change_str, change_col, history = "—", "—", COLOR["neutral"], None
 
-    # ── Consensus & upside ────────────────────────────────────────────────────
-    label    = con.get("label", "N/A")
-    con_col  = _consensus_color(label)
-    total    = con.get("total", 0)
-
+    # Consensus & upside
+    label   = con.get("label", "N/A")
+    con_col = _consensus_color(label)
+    total   = con.get("total", 0)
     if tgt and tgt.get("mean") and p_data and price > 0:
         upside_val = (tgt["mean"] - price) / price * 100.0
         upside_str = _format_pct(upside_val)
         upside_col = _change_color(upside_val)
     else:
-        upside_str = "—"
-        upside_col = COLOR["neutral"]
+        upside_str, upside_col = "—", COLOR["neutral"]
 
-    # ── Recent analyst actions ────────────────────────────────────────────────
-    upg_df  = upgrades.get(ticker)
-    actions = _filter_recent_actions(upg_df, days=30)
-    if not actions.empty:
-        pill_html = ""
-        for _, row in actions.iterrows():
-            pill_html += _action_pill(
-                str(row.get("action", "")),
-                str(row.get("to_grade", "")),
-                str(row.get("firm", "")),
-            )
-        actions_html = f'<div style="margin-top:4px">{pill_html}</div>'
-    else:
-        actions_html = (
-            f'<div style="font-size:11px;color:{COLOR["text_dim"]};margin-top:4px">'
-            f'אין שינויים אחרונים</div>'
-        )
-
-    # ── Flag row ──────────────────────────────────────────────────────────────
-    ticker_flags = [
-        f for f in all_flags
-        if f["ticker"] == ticker and not str(f["ticker"]).startswith("🗂")
-    ]
-    if ticker_flags:
-        bad_flags = [f for f in ticker_flags if f["status"] in ("triggered", "watch")]
-        if bad_flags:
-            flag_parts = []
-            for f in bad_flags:
-                icon = "🔴" if f["status"] == "triggered" else "🟡"
-                col  = COLOR["negative"] if f["status"] == "triggered" else COLOR["warning"]
-                flag_parts.append(
-                    f'<span style="color:{col};font-size:11px;margin-left:8px">'
-                    f'{icon} {f["flag"]}</span>'
-                )
-            flags_html = "".join(flag_parts)
-        else:
-            flags_html = (
-                f'<span style="color:{COLOR["positive"]};font-size:11px">🟢 תקין</span>'
-            )
-        nodata_flags = [f for f in ticker_flags if f["status"] == "nodata"]
-        if nodata_flags and not bad_flags:
-            flags_html = (
-                f'<span style="color:{COLOR["dim"]};font-size:11px">⚫ אין נתונים</span>'
-            )
-    else:
-        flags_html = (
-            f'<span style="color:{COLOR["dim"]};font-size:11px">⚫ אין נתונים</span>'
-        )
-
-    # ── Alpha vs VOO ──────────────────────────────────────────────────────────
+    # Alpha
     alpha = _compute_alpha(history, voo_history, lookback=21)
     if alpha is not None:
-        alpha_str = _format_pct(alpha)
-        alpha_col = _change_color(alpha)
-        alpha_label = f'<span style="color:{alpha_col};font-weight:600">{alpha_str} vs VOO</span>'
+        alpha_str   = _format_pct(alpha)
+        alpha_label = f'<span style="color:{_change_color(alpha)};font-weight:600">{alpha_str} vs VOO</span>'
     else:
+        alpha_str   = "—"
         alpha_label = f'<span style="color:{COLOR["neutral"]}">—</span>'
 
-    # ── AI brief ──────────────────────────────────────────────────────────────
-    ai_section_html = ""
-    if claude_api_key:
-        brief_data_lines = [
-            f"קונצנזוס: {label} ({total} אנליסטים)",
-        ]
-        if upside_str != "—":
-            brief_data_lines.append(f"אפסייד: {upside_str}")
-        if bad_flags:
-            flag_names = ", ".join(f["flag"] for f in bad_flags)
-            brief_data_lines.append(f"דגלים: {flag_names}")
-        if alpha is not None:
-            brief_data_lines.append(f"אלפא חודשי vs VOO: {alpha_str}")
-        brief_data_str = "\n".join(brief_data_lines)
+    # Sub-sections
+    bad_flags    = [f for f in all_flags if f["ticker"] == ticker and f["status"] in ("triggered", "watch")]
+    actions_html = _card_actions_html(upgrades, ticker)
+    flags_html   = _card_flags_html(ticker, all_flags)
+    ai_html      = _card_ai_html(ticker, label, total, upside_str, bad_flags, alpha, alpha_str, td_str, claude_api_key)
 
-        brief_text = _generate_ticker_brief(ticker, brief_data_str, td_str, claude_api_key)
-        if brief_text:
-            # Turn each line into a visual bullet point
-            lines = [ln.strip() for ln in brief_text.split("\n") if ln.strip()]
-            bullets = "".join(
-                f'<div style="margin-bottom:4px">• {ln}</div>'
-                for ln in lines
-            )
-            ai_section_html = (
-                f'<div style="margin-top:10px;padding:10px 12px;'
-                f'background:#0a1a11;border:1px solid {COLOR["primary"]}33;'
-                f'border-radius:6px;font-size:11px;color:#d0e8da;line-height:1.7">'
-                f'<div style="font-size:10px;color:{COLOR["primary"]};'
-                f'font-weight:600;margin-bottom:6px">🤖 סיכום AI</div>'
-                f'{bullets}</div>'
-            )
-
-    # ── Assemble card HTML ────────────────────────────────────────────────────
+    # Assemble card
     card_html = (
-        f'<div dir="rtl" style="'
-        f'background:#1a1f2e;'
-        f'border:1px solid #1f2937;'
-        f'border-radius:8px;'
-        f'padding:14px 18px;'
-        f'margin-bottom:10px;'
-        f'font-family:inherit">'
-
-        # Header row: ticker name | price + change
+        f'<div dir="rtl" style="background:#1a1f2e;border:1px solid #1f2937;'
+        f'border-radius:8px;padding:14px 18px;margin-bottom:10px;font-family:inherit">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
         f'  <div>'
         f'    <span style="font-size:16px;font-weight:700;color:{COLOR["primary"]}">{ticker}</span>'
@@ -302,39 +278,23 @@ def _render_card(
         f'    <span style="font-size:12px;color:{change_col};margin-right:6px"> {change_str}</span>'
         f'  </div>'
         f'</div>'
-
-        # Analyst row: consensus | upside
         f'<div style="display:flex;gap:16px;margin-bottom:6px;flex-wrap:wrap">'
-        f'  <div style="font-size:11px">'
-        f'    <span style="color:{COLOR["text_dim"]}">קונצנזוס: </span>'
+        f'  <div style="font-size:11px"><span style="color:{COLOR["text_dim"]}">קונצנזוס: </span>'
         f'    <span style="color:{con_col};font-weight:600">{label}</span>'
-        + (f'    <span style="color:{COLOR["dim"]};font-size:10px"> ({total})</span>' if total > 0 else "")
+        + (f'<span style="color:{COLOR["dim"]};font-size:10px"> ({total})</span>' if total > 0 else "")
         + f'  </div>'
-        f'  <div style="font-size:11px">'
-        f'    <span style="color:{COLOR["text_dim"]}">אפסייד: </span>'
-        f'    <span style="color:{upside_col};font-weight:600">{upside_str}</span>'
-        f'  </div>'
-        f'  <div style="font-size:11px">'
-        f'    <span style="color:{COLOR["text_dim"]}">אלפא 1M: </span>'
-        f'    {alpha_label}'
-        f'  </div>'
+        f'  <div style="font-size:11px"><span style="color:{COLOR["text_dim"]}">אפסייד: </span>'
+        f'    <span style="color:{upside_col};font-weight:600">{upside_str}</span></div>'
+        f'  <div style="font-size:11px"><span style="color:{COLOR["text_dim"]}">אלפא 1M: </span>'
+        f'    {alpha_label}</div>'
         f'</div>'
-
-        # Recent analyst actions
         f'<div style="margin-bottom:6px">'
         f'  <span style="font-size:10px;color:{COLOR["text_dim"]}">פעולות אנליסטים (30י): </span>'
-        f'{actions_html}'
-        f'</div>'
-
-        # Flag row
+        f'{actions_html}</div>'
         f'<div style="margin-bottom:2px">'
         f'  <span style="font-size:10px;color:{COLOR["text_dim"]}">דגלים: </span>'
-        f'{flags_html}'
-        f'</div>'
-
-        # AI brief (optional)
-        + ai_section_html
-
+        f'{flags_html}</div>'
+        + ai_html
         + '</div>'
     )
     st.markdown(card_html, unsafe_allow_html=True)

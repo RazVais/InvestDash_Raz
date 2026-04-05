@@ -152,6 +152,8 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | 2026-04-03 | macro.py / empty macro data | `yf.download([symbols], ...)` for macro/commodity tickers returns MultiIndex columns that the parse logic silently fails on → VIX/10Y/DXY show "—" in sidebar | Fixed: rewrote `_fetch_one_macro` and `_fetch_one_commodity` to use per-symbol `yf.Ticker(sym).history()` in ThreadPoolExecutor |
 | 2026-04-03 | browser / crypto.randomUUID | Streamlit 1.43+ uses `crypto.randomUUID()` which requires a secure context (HTTPS or localhost); accessing via IP → `crypto.randomUUID is not a function` | Fixed: added `address = "localhost"` to `.streamlit/config.toml` |
 | 2026-04-03 | analysis_tab / anthropic missing | `anthropic` package listed in requirements.txt but not installed in venv → `No module named 'anthropic'` at runtime | Fixed: `pip install anthropic` in the venv |
+| 2026-04-03 | analysis_tab / 5-filter silent errors | `except Exception: pass` swallowed all evaluation errors → empty stars with no feedback | Fixed: return `{"_error": str(exc)}` and display warning banner with retry button |
+| 2026-04-03 | analysis_tab / JSON parse error | Claude Haiku embedded Hebrew quotation marks (`"`) inside JSON string values → `Expecting ',' delimiter` | Fixed: English-only prompt + `_safe_parse_json()` that strips trailing commas before retry |
 
 **Rule for Claude**: Every time a bug is caught or a feature is added, update the table above AND the Changelog below before finishing the task.
 
@@ -166,3 +168,4 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | v2.1 | 2026-04-02 | Two-tier parallel data loading with background cache warming; email digest with alerts |
 | v2.2 | 2026-04-02 | 📋 יומי daily brief tab; 🔬 ניתוח 5-filter analysis tab (both with Claude Haiku AI, TTL-cached) |
 | v3.0 | 2026-04-03 | Bloomberg-style UI: sidebar primary nav (5 tabs), KPI header (value/P&L/alpha/bell), secondary tab bar (חדשות/המלצות/יומי/ניתוח), macro sparklines (7-day SVG); fixed macro data fetch + crypto.randomUUID |
+| v3.1 | 2026-04-03 | Code quality: extracted 26+ large functions (>60 lines) into focused helpers across dashboard.py, charts.py, daily_brief_tab.py, analysis_tab.py; added SECURITY.md, .env.example, secrets.toml.example; fixed 5-filter silent errors + JSON parse errors |
