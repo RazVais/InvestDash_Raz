@@ -45,6 +45,9 @@ _FILTER_KEYS = ("revenue_growth", "competitive_pos", "leadership", "market_timin
 
 def _safe_parse_json(text: str) -> Optional[dict]:
     """Extract and parse the first JSON object in text, tolerating minor formatting issues."""
+    import re
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    text = re.sub(r"```[a-z]*\n?", "", text).strip()
     start = text.find("{")
     end   = text.rfind("}") + 1
     if start < 0 or end <= start:
@@ -56,7 +59,6 @@ def _safe_parse_json(text: str) -> Optional[dict]:
     except _json.JSONDecodeError:
         pass
     # Strip trailing commas before } or ] (common LLM mistake)
-    import re
     cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
     try:
         return _json.loads(cleaned)
@@ -103,7 +105,7 @@ def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_ap
         )
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=800,
+            max_tokens=1400,
             messages=[{"role": "user", "content": prompt}],
         )
         text   = msg.content[0].text.strip()
