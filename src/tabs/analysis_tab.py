@@ -1,6 +1,13 @@
-"""Analysis tab — 5-Filter Investment Evaluation for stocks not in portfolio.
+"""Analysis tab — 5-Filter Investment Evaluation (Buffett & Lynch framework).
 
-Automatically evaluates every ticker from SUGGESTIONS that the user hasn't bought yet,
+Filters map directly to the Buffett/Lynch due-diligence framework:
+  1. פונדמנטלס  — Buffett quantitative pillars (ROE, FCF, PEG)
+  2. Moat        — Buffett economic moat + Lindy Effect
+  3. הנהלה       — Lynch management & capital allocation
+  4. שווי        — Buffett margin of safety + second-level thinking
+  5. דגלים       — Lynch red flags (debt, dilution, hype, complexity)
+
+Evaluates every ticker from SUGGESTIONS not yet in portfolio,
 plus a custom-ticker search box for any other stock.
 """
 
@@ -19,11 +26,11 @@ from src.ui_helpers import section_title
 # ── Filter definitions ────────────────────────────────────────────────────────
 
 _FILTERS = [
-    ("revenue_growth",  "צמיחת הכנסות",   "📈"),
-    ("competitive_pos", "עמדה תחרותית",   "🏆"),
-    ("leadership",      "איכות הנהלה",    "👔"),
-    ("market_timing",   "תזמון שוק",      "⏱️"),
-    ("risk_assessment", "הערכת סיכון",    "⚠️"),
+    ("revenue_growth",  "פונדמנטלס ועסקיות",    "📊"),   # Buffett/Lynch quantitative pillars
+    ("competitive_pos", "חפיר תחרותי — Moat",    "🏰"),   # Buffett economic moat
+    ("leadership",      "הנהלה וניהול הון",       "👔"),   # Lynch capital allocation
+    ("market_timing",   "שווי ומרווח ביטחון",    "💰"),   # Buffett margin of safety
+    ("risk_assessment", "דגלים אדומים",          "🚩"),   # Lynch red flags
 ]
 
 _RATING_COLORS = {1: "#f44336", 2: "#ff9800", 3: "#ffeb3b", 4: "#8bc34a", 5: "#00cf8d"}
@@ -77,11 +84,20 @@ def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_ap
             "Rules:\n"
             "- rating is an integer 1-5 (1=very poor, 5=excellent)\n"
             "- explanation is 2 sentences in Hebrew, NO quotation marks inside the text\n"
-            "- revenue_growth: annual growth from 1Y price return, revenue trend, stability\n"
-            "- competitive_pos: moat, market share, pricing power — use P/E and ROE\n"
-            "- leadership: ROE, debt management, capital allocation, management track record\n"
-            "- market_timing: momentum (1M/3M/1Y returns), distance from 52W high/low, analyst sentiment\n"
-            "- risk_assessment: volatility (beta), regulatory risk, short interest, sector risk"
+            "- revenue_growth (Buffett/Lynch quantitative pillars): EPS and revenue growth trend, "
+            "ROE vs Buffett 15% threshold, PEG ratio vs growth rate, FCF alignment with net income\n"
+            "- competitive_pos (Buffett economic moat): brand power, switching costs, low-cost "
+            "producer advantage, pricing power; apply Lindy Effect — how long has this business "
+            "model survived, does it have durable competitive advantages?\n"
+            "- leadership (Lynch management & capital allocation): insider ownership / skin in the "
+            "game, capital allocation quality (share buybacks when undervalued vs Lynch diworseification "
+            "— buying unrelated companies), conservative guidance vs stock pumping, debt management\n"
+            "- market_timing (Buffett margin of safety): does the current price offer a 20-30% "
+            "discount to intrinsic value or analyst consensus target? Apply second-level thinking "
+            "(Howard Marks) — is the stock under-loved or priced for perfection?\n"
+            "- risk_assessment (Lynch red flags): high debt vs industry peers, growth only by "
+            "acquisition rather than organically, sector hype / media darling overvaluation, "
+            "constant share dilution, business model too complex to explain in 2 sentences"
         )
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -146,8 +162,8 @@ def _build_data_summary(
             f"n={targets.get('count',0)}"
         )
     if fundamentals:
-        for key in ["P/E", "Forward P/E", "EPS (TTM)", "ROE", "Market Cap",
-                    "Short Float", "Inst Own", "Sector"]:
+        for key in ["P/E", "Forward P/E", "EPS (TTM)", "ROE", "Debt/Eq",
+                    "PEG", "P/FCF", "Market Cap", "Short Float", "Inst Own", "Sector"]:
             if fundamentals.get(key):
                 lines.append(f"{key}: {fundamentals[key]}")
     return "\n".join(lines)
@@ -195,6 +211,88 @@ def _score_badge(total: int) -> str:
         f'<span style="background:{color}22;color:{color};border:1px solid {color}44;'
         f'border-radius:20px;padding:2px 14px;font-size:13px;font-weight:700;'
         f'white-space:nowrap">{total}/25 — {verdict}</span>'
+    )
+
+
+def _guru_checklist_html(
+    p: Optional[dict],
+    con: Optional[dict],
+    tgt: Optional[dict],
+    fun: Optional[dict],
+) -> str:
+    """Static Buffett/Lynch quick-checks from raw data — no AI needed."""
+
+    def _pct(s: str) -> Optional[float]:
+        try:
+            return float(s.strip().rstrip("%").replace(",", ""))
+        except Exception:
+            return None
+
+    def _num(s: str) -> Optional[float]:
+        try:
+            return float(s.strip().replace(",", ""))
+        except Exception:
+            return None
+
+    checks = []
+
+    # ROE > 15% — Buffett profitability standard
+    roe = _pct((fun or {}).get("ROE", ""))
+    if roe is not None:
+        checks.append(("ROE>15%", roe > 15, "Buffett"))
+
+    # Debt/Eq < 1.0 — Lynch: "hard to go bankrupt with zero debt"
+    de = _num((fun or {}).get("Debt/Eq", ""))
+    if de is not None:
+        checks.append(("חוב/הון<1", de < 1.0, "Lynch"))
+
+    # PEG < 1.5 — Lynch: P/E relative to growth rate
+    peg = _num((fun or {}).get("PEG", ""))
+    if peg is not None and peg > 0:
+        checks.append(("PEG<1.5", peg < 1.5, "Lynch"))
+
+    # Margin of safety ≥ 20% — Buffett: buy at 20-30% discount to intrinsic value
+    if p and tgt and tgt.get("mean") and p.get("price"):
+        upside = (tgt["mean"] - p["price"]) / p["price"] * 100
+        checks.append(("מרווח≥20%", upside >= 20, "Buffett"))
+
+    # Short float < 10% — Lynch: low controversy, no crowded short
+    sf = _pct((fun or {}).get("Short Float", ""))
+    if sf is not None:
+        checks.append(("שורט<10%", sf < 10, "Lynch"))
+
+    # Consensus not Sell — analyst sentiment sanity check
+    label = (con or {}).get("label", "")
+    if label and label != "N/A":
+        ok = "Sell" not in label and "Underperform" not in label
+        checks.append(("קונצנזוס", ok, ""))
+
+    if not checks:
+        return ""
+
+    pills = ""
+    for check_label, ok, guru in checks:
+        color    = COLOR["positive"] if ok else COLOR["negative"]
+        icon     = "✅" if ok else "❌"
+        guru_tag = (
+            f'<span style="font-size:9px;opacity:0.65"> ({guru})</span>'
+            if guru else ""
+        )
+        pills += (
+            f'<span style="display:inline-block;background:{color}18;'
+            f'border:1px solid {color}44;border-radius:20px;'
+            f'padding:2px 10px;font-size:11px;color:{color};'
+            f'margin:2px 4px 2px 0;white-space:nowrap">'
+            f'{icon} {check_label}{guru_tag}</span>'
+        )
+
+    return (
+        f'<div dir="rtl" style="margin-bottom:14px;padding:10px 14px;'
+        f'background:#0a1018;border:1px solid #1f2937;border-radius:8px">'
+        f'<div style="font-size:10px;color:{COLOR["text_dim"]};'
+        f'margin-bottom:6px;font-weight:600">🔍 בדיקות מהירות — Buffett & Lynch</div>'
+        f'<div style="display:flex;flex-wrap:wrap">{pills}</div>'
+        f'</div>'
     )
 
 
@@ -271,6 +369,10 @@ def _render_ticker_section(
 
     with st.expander(f"{ticker} — {name}  |  {price_str}  |  {label}  |  אפסייד {upside_str}", expanded=expanded):
         _render_ticker_stats_row(p, con, tgt, theme)
+
+        checklist = _guru_checklist_html(p, con, tgt, fun)
+        if checklist:
+            st.markdown(checklist, unsafe_allow_html=True)
 
         eval_result: dict = {}
         if claude_api_key:
@@ -374,8 +476,8 @@ def _render_custom_ticker_section(owned, td_str, api_key, claude_api_key):
 
 def render_analysis(portfolio, data, td_str: str, api_key: str = "", claude_api_key: str = ""):
     section_title(
-        "מערכת 5 הפילטרים — ניתוח מניות לא בתיק",
-        "הערכת מניות מוצעות לפי 5 קריטריונים מרכזיים — רווחים, תחרות, הנהלה, תזמון וסיכון",
+        "מערכת 5 הפילטרים — Buffett & Lynch",
+        "הערכת מניות לפי פילוסופיית Buffett (ערך/איכות) ו-Lynch (צמיחה/תצפית)",
     )
     owned      = set(all_tickers(portfolio))
     candidates = [s for s in SUGGESTIONS if s["ticker"] not in owned]
@@ -383,12 +485,25 @@ def render_analysis(portfolio, data, td_str: str, api_key: str = "", claude_api_
     with st.expander("מה זה 5 הפילטרים? 📖", expanded=False):
         st.markdown(
             '<div dir="rtl" style="font-size:13px;color:#cccccc;line-height:1.9">'
-            "<b>1. 📈 צמיחת הכנסות</b> — האם ההכנסות גדלות? האם המגמה יציבה?<br>"
-            "<b>2. 🏆 עמדה תחרותית</b> — האם לחברה יש חפיר תחרותי? כוח תמחור?<br>"
-            "<b>3. 👔 איכות הנהלה</b> — רקורד ביצוע, ROE, ניהול הון ומוניטין?<br>"
-            "<b>4. ⏱️ תזמון שוק</b> — מומנטום מחיר, קרבה לשיא/שפל 52 שבוע?<br>"
-            "<b>5. ⚠️ הערכת סיכון</b> — תנודתיות, ריבית שורט, סיכון סקטורי?<br><br>"
-            "כל פילטר מקבל ציון 1–5 (1=גרוע, 5=מצוין). <b>ציון כולל מתוך 25.</b>"
+            "<b>1. 📊 פונדמנטלס ועסקיות</b> (Buffett/Lynch) — "
+            "ROE > 15%? FCF גדל ומתואם לרווח נקי? PEG סביר ביחס לצמיחה?<br>"
+            "<b>2. 🏰 חפיר תחרותי — Moat</b> (Buffett) — "
+            "מה מונע מהמתחרים לגנוב לקוחות? כוח מיתוג, עלויות מעבר, יצרן זול? "
+            "אפקט לינדי — האם המודל עסקי שרד מספר מיתונים?<br>"
+            "<b>3. 👔 הנהלה וניהול הון</b> (Lynch) — "
+            "האם להנהלה skin in the game? האם ההון מוקצה לרכישות עצמיות או ל-diworseification? "
+            "האם ההנחיות שמרניות?<br>"
+            "<b>4. 💰 שווי ומרווח ביטחון</b> (Buffett) — "
+            "האם המחיר נמוך ב-20-30% מהשווי הפנימי? Second-level thinking — "
+            "האם השוק מתמחר יתר על המידה או מתעלם מפוטנציאל?<br>"
+            "<b>5. 🚩 דגלים אדומים</b> (Lynch) — "
+            "חוב גבוה מהמתחרים? צמיחה רק דרך רכישות? הייפ תקשורתי? "
+            "דילול מניות מתמשך? מודל עסקי מורכב מדי?<br><br>"
+            "כל פילטר מקבל ציון 1–5 (1=גרוע, 5=מצוין). <b>ציון כולל מתוך 25.</b><br>"
+            '<span style="color:#888;font-size:11px">'
+            "הפילטרים מבוססים על: Warren Buffett (Berkshire Hathaway), "
+            "Peter Lynch (Fidelity Magellan), Howard Marks (Oaktree Capital)"
+            "</span>"
             "</div>",
             unsafe_allow_html=True,
         )
