@@ -73,17 +73,19 @@ def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_ap
         prompt = (
             f"Analyze stock {ticker} using the following market data:\n"
             f"{data_summary}\n\n"
+            "CRITICAL: ALL explanation values MUST be written in Hebrew (עברית). "
+            "Do NOT write any explanation in English. "
             "Return ONLY a JSON object — no text before or after it. "
-            "Do not use quotes inside explanation values. Use only simple sentences.\n\n"
+            "Do not use quotation marks inside explanation values.\n\n"
             "Format:\n"
-            '{"revenue_growth":{"rating":3,"explanation":"text"},'
-            '"competitive_pos":{"rating":3,"explanation":"text"},'
-            '"leadership":{"rating":3,"explanation":"text"},'
-            '"market_timing":{"rating":3,"explanation":"text"},'
-            '"risk_assessment":{"rating":3,"explanation":"text"}}\n\n'
+            '{"revenue_growth":{"rating":3,"explanation":"טקסט בעברית"},'
+            '"competitive_pos":{"rating":3,"explanation":"טקסט בעברית"},'
+            '"leadership":{"rating":3,"explanation":"טקסט בעברית"},'
+            '"market_timing":{"rating":3,"explanation":"טקסט בעברית"},'
+            '"risk_assessment":{"rating":3,"explanation":"טקסט בעברית"}}\n\n'
             "Rules:\n"
             "- rating is an integer 1-5 (1=very poor, 5=excellent)\n"
-            "- explanation is 2 sentences in Hebrew, NO quotation marks inside the text\n"
+            "- explanation: EXACTLY 2 sentences in Hebrew only, no English words\n"
             "- revenue_growth (Buffett/Lynch quantitative pillars): EPS and revenue growth trend, "
             "ROE vs Buffett 15% threshold, PEG ratio vs growth rate, FCF alignment with net income\n"
             "- competitive_pos (Buffett economic moat): brand power, switching costs, low-cost "
