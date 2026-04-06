@@ -47,27 +47,31 @@ def _fetch_yahoo_v8(ticker, period="1y"):
     Bypasses the yfinance library entirely — uses a separate HTTP session with
     its own rate-limit budget, no cookie/SQLite patches needed.
     Works for US tickers AND NASDAQ-listed Israeli tickers (e.g. ESLT).
+    Returns (DataFrame, meta_dict) where meta_dict contains dividend/beta fields.
     """
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         r = _req.get(
             url,
-            params={"interval": "1d", "range": period},
+            params={"interval": "1d", "range": period, "events": "div"},
             headers=_YF_HEADERS,
             timeout=15,
         )
         if r.status_code != 200:
             _log.warning("Yahoo v8 non-200", extra={"ticker": ticker, "status": r.status_code})
-            return None
+            return None, {}
         j = r.json()
         results = j.get("chart", {}).get("result")
         if not results:
             _log.warning("Yahoo v8 empty result", extra={"ticker": ticker})
-            return None
+            return None, {}
         res        = results[0]
+        meta       = res.get("meta", {})
+        # Attach dividend events to meta so caller can compute yield
+        meta["_div_events"] = res.get("events", {}).get("dividends", {})
         timestamps = res.get("timestamp", [])
         if not timestamps:
-            return None
+            return None, meta
         q   = res["indicators"]["quote"][0]
         # Use adjusted close when available (accounts for splits/dividends)
         adj_list = res["indicators"].get("adjclose")
@@ -81,10 +85,10 @@ def _fetch_yahoo_v8(ticker, period="1y"):
             "Volume": q["volume"],
         }, index=idx)
         df = df.dropna(subset=["Close"])
-        return df if not df.empty else None
+        return (df if not df.empty else None), meta
     except Exception:
         _log.error("Yahoo v8 fetch error", exc_info=True, extra={"ticker": ticker})
-        return None
+        return None, {}
 
 
 def _fetch_yahoo_v8_range(ticker, start: str, end: str):
@@ -140,31 +144,32 @@ def _fetch_yfinance_history(ticker):
 
 def _ohlcv_for_ticker(ticker):
     """
-    Try sources in priority order and return first successful DataFrame.
+    Try sources in priority order and return (DataFrame, meta, source_name).
 
     Note on ESLT: We always use the plain NASDAQ ticker (USD). The TASE .TA
     suffix returns prices in ILA (Israeli Agorot, 1/100 of ILS) which would
     corrupt USD-denominated P&L calculations.
     """
     # 1. Yahoo Finance v8 REST (bypasses yfinance rate-limit budget)
-    df = _fetch_yahoo_v8(ticker)
+    df, meta = _fetch_yahoo_v8(ticker)
     if df is not None:
-        return df, "yahoo_v8"
+        return df, meta, "yahoo_v8"
 
-    # 2. yfinance Ticker.history() fallback
+    # 2. yfinance Ticker.history() fallback — no meta dividend data available
     df = _fetch_yfinance_history(ticker)
     if df is not None:
-        return df, "yfinance"
+        return df, {}, "yfinance"
 
-    return None, "none"
+    return None, {}, "none"
 
 
 # ── Per-ticker worker (runs in thread pool) ───────────────────────────────────
 
+
 def _process_one_ticker(t):
-    """Fetch OHLCV + beta/div_yield for a single ticker. Thread-safe."""
+    """Fetch OHLCV + beta/div_yield/div_rate for a single ticker. Thread-safe."""
     try:
-        df, source = _ohlcv_for_ticker(t)
+        df, meta, source = _ohlcv_for_ticker(t)
         if df is None or df.empty:
             _log.warning("All price sources failed", extra={"ticker": t})
             return t, None, "no data"
@@ -178,21 +183,32 @@ def _process_one_ticker(t):
         price = float(close.iloc[-1])
         prev  = float(close.iloc[-2]) if len(close) > 1 else price
 
-        # Beta + dividend yield — semaphore caps concurrent yfinance .info calls
-        beta, div_yield = 1.0, 0.0
+        # Beta from yfinance .info (semaphore caps concurrent calls)
+        beta = 1.0
         with _YF_INFO_SEM:
             try:
                 info = yf.Ticker(t).info
                 beta = float(info.get("beta") or 1.0)
-                dy   = (
-                    info.get("dividendYield")
-                    or info.get("trailingAnnualDividendYield")
-                    or info.get("yield")
-                    or 0.0
-                )
-                div_yield = float(dy) * 100
             except Exception:
                 _log.warning("ticker .info unavailable", extra={"ticker": t})
+
+        # Dividend yield + annual rate — computed from v8 dividend events (zero extra requests)
+        div_yield, div_rate = 0.0, 0.0
+        try:
+            div_events = meta.get("_div_events", {})
+            if div_events and price > 0:
+                import time as _time
+                one_year_ago = _time.time() - 365 * 86400
+                recent_amounts = [
+                    float(v["amount"])
+                    for v in div_events.values()
+                    if float(v.get("date", 0)) >= one_year_ago
+                ]
+                if recent_amounts:
+                    div_rate  = sum(recent_amounts)
+                    div_yield = div_rate / price * 100
+        except Exception:
+            _log.warning("dividend events parse failed", extra={"ticker": t})
 
         ohlcv = pd.DataFrame({
             "Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume,
@@ -205,6 +221,7 @@ def _process_one_ticker(t):
             "change":    ((price - prev) / prev * 100) if prev else 0.0,
             "beta":      beta,
             "div_yield": div_yield,
+            "div_rate":  div_rate,
             "ohlcv":     ohlcv,
             "high_52w":  float(close.max()),
             "low_52w":   float(close.min()),

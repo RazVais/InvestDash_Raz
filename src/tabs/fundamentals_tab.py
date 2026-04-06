@@ -96,7 +96,8 @@ def _render_earnings_dividends(tickers, prices, earnings):
     for t in tickers:
         p   = prices.get(t)
         ed  = earnings.get(t)
-        div = p.get("div_yield", 0.0) if p else 0.0
+        div       = p.get("div_yield", 0.0) if p else 0.0
+        div_rate  = p.get("div_rate",  0.0) if p else 0.0
 
         # Days to earnings
         if ed is not None:
@@ -116,11 +117,17 @@ def _render_earnings_dividends(tickers, prices, earnings):
         else:
             earn_str = f'<span style="color:{COLOR["text_dim"]}">—</span>'
 
-        div_str = (
-            f'<span style="color:{COLOR["positive"]};font-weight:700">{div:.2f}%</span>'
-            if div and div > 0.01 else
-            f'<span style="color:{COLOR["text_dim"]}">ללא דיבידנד</span>'
-        )
+        if div and div > 0.01:
+            rate_part = (
+                f' <span style="color:{COLOR["text_dim"]};font-size:10px">(${div_rate:.2f}/מניה/שנה)</span>'
+                if div_rate and div_rate > 0 else ""
+            )
+            div_str = (
+                f'<span style="color:{COLOR["positive"]};font-weight:700">{div:.2f}%</span>'
+                + rate_part
+            )
+        else:
+            div_str = f'<span style="color:{COLOR["text_dim"]}">ללא דיבידנד</span>'
 
         rows += (
             f'<tr>'
