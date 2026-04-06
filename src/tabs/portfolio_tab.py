@@ -4,7 +4,7 @@ from datetime import date
 
 import streamlit as st
 
-from src.config import COLOR, TICKER_NAMES
+from src.config import COLOR, TICKER_NAMES, guess_layer
 from src.data.prices import lookup_buy_price
 from src.portfolio import (
     add_lot,
@@ -182,11 +182,9 @@ _NEW_TICKER_OPTION = "➕ טיקר חדש..."
 
 def _form_add_lot(portfolio):
     with st.expander("➕ הוסף קנייה"):
-        layers          = list(portfolio["layers"].keys())
-        existing        = sorted(all_tickers(portfolio))
-        ticker_options  = existing + [_NEW_TICKER_OPTION]
+        existing       = sorted(all_tickers(portfolio))
+        ticker_options = existing + [_NEW_TICKER_OPTION]
 
-        layer      = st.selectbox("שכבה", layers, key="add_layer")
         ticker_sel = st.selectbox("סימול (Ticker)", ticker_options, key="add_ticker_sel",
                                   format_func=lambda t: t if t != _NEW_TICKER_OPTION else "➕ הוסף טיקר חדש...")
 
@@ -196,6 +194,18 @@ def _form_add_lot(portfolio):
                                    placeholder="e.g. NVDA").upper().strip()
         else:
             ticker = ticker_sel
+
+        # Auto-assign layer — no user input needed
+        layer = guess_layer(ticker) if ticker else list(portfolio["layers"].keys())[0]
+        # Ensure the layer exists in this portfolio (it may have been renamed)
+        if layer not in portfolio["layers"]:
+            layer = list(portfolio["layers"].keys())[0]
+        st.markdown(
+            f'<div dir="rtl" style="font-size:11px;color:#aaaaaa;margin:4px 0 10px 0">'
+            f'שכבה: <b style="color:#00cf8d">{layer}</b>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         shares = st.number_input("כמות מניות", min_value=0.001, step=0.001, format="%.3f", key="add_shares")
         bd     = st.date_input("תאריך קנייה", value=date.today(), key="add_date")
@@ -208,7 +218,7 @@ def _form_add_lot(portfolio):
             else:
                 add_lot(portfolio, layer, ticker, shares, bd)
                 st.cache_data.clear()
-                st.success(f"נוסף: {ticker} × {shares:.3f} @ {bd}")
+                st.success(f"נוסף: {ticker} × {shares:.3f} @ {bd} — שכבה: {layer}")
                 st.rerun()
 
 

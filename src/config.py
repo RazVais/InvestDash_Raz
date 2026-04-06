@@ -21,6 +21,103 @@ LAYER_COLORS = {
     "Security & Stability":    "#9C27B0",
 }
 
+# Reverse map: ticker → layer.  Built from TICKERS_BY_LAYER + extended coverage.
+# Used by guess_layer() to auto-assign the layer when the user adds a new position.
+TICKER_LAYER_MAP: dict = {}
+for _layer, _tickers in TICKERS_BY_LAYER.items():
+    for _t in _tickers:
+        TICKER_LAYER_MAP[_t] = _layer
+
+# Extended coverage: suggestions, common ETFs, and well-known stocks
+_EXTRA_LAYERS = {
+    # ── Suggestions ──────────────────────────────────────────────
+    "NVDA":  "Compute & Platform",
+    "MSFT":  "Compute & Platform",
+    "PANW":  "Security & Stability",
+    "TSM":   "Compute & Platform",
+    "NXE":   "Physical Infrastructure",
+    "WPM":   "Security & Stability",
+    "META":  "Compute & Platform",
+    # ── Common ETFs / indices → Core ─────────────────────────────
+    "SPY":   "Core (50%)",
+    "IVV":   "Core (50%)",
+    "VTI":   "Core (50%)",
+    "QQQ":   "Core (50%)",
+    "SCHB":  "Core (50%)",
+    "VEA":   "Core (50%)",
+    "VWO":   "Core (50%)",
+    "GLD":   "Core (50%)",
+    "IAU":   "Core (50%)",
+    "BND":   "Core (50%)",
+    "AGG":   "Core (50%)",
+    # ── Tech / AI / Semiconductors → Compute & Platform ──────────
+    "AAPL":  "Compute & Platform",
+    "INTC":  "Compute & Platform",
+    "QCOM":  "Compute & Platform",
+    "AVGO":  "Compute & Platform",
+    "MU":    "Compute & Platform",
+    "ASML":  "Compute & Platform",
+    "ORCL":  "Compute & Platform",
+    "IBM":   "Compute & Platform",
+    "CRM":   "Compute & Platform",
+    "SNOW":  "Compute & Platform",
+    "PLTR":  "Compute & Platform",
+    "TSLA":  "Compute & Platform",
+    "UBER":  "Compute & Platform",
+    "SHOP":  "Compute & Platform",
+    # ── Energy / Materials / Infrastructure ──────────────────────
+    "XOM":   "Physical Infrastructure",
+    "CVX":   "Physical Infrastructure",
+    "NEE":   "Physical Infrastructure",
+    "LIN":   "Physical Infrastructure",
+    "NUE":   "Physical Infrastructure",
+    "FCX":   "Physical Infrastructure",
+    "MP":    "Physical Infrastructure",
+    "DNN":   "Physical Infrastructure",
+    "URA":   "Physical Infrastructure",
+    "AGX":   "Physical Infrastructure",
+    # ── Defense / Healthcare / Gold / Cyber → Security & Stability
+    "LMT":   "Security & Stability",
+    "RTX":   "Security & Stability",
+    "NOC":   "Security & Stability",
+    "BA":    "Security & Stability",
+    "GD":    "Security & Stability",
+    "FTNT":  "Security & Stability",
+    "S":     "Security & Stability",
+    "ZS":    "Security & Stability",
+    "OKTA":  "Security & Stability",
+    "JNJ":   "Security & Stability",
+    "PFE":   "Security & Stability",
+    "MRK":   "Security & Stability",
+    "ABBV":  "Security & Stability",
+    "GFI":   "Security & Stability",
+    "AEM":   "Security & Stability",
+    "NEM":   "Security & Stability",
+}
+TICKER_LAYER_MAP.update(_EXTRA_LAYERS)
+
+# Common ETF suffixes / keywords for detection of unknown ETF tickers
+_ETF_KEYWORDS = ("etf", "fund", "trust", "index", "ishares", "vanguard", "spdr", "invesco")
+
+
+def guess_layer(ticker: str) -> str:
+    """Return the most likely portfolio layer for *ticker*.
+
+    Priority:
+    1. Exact match in TICKER_LAYER_MAP
+    2. Ticker ends with a common ETF suffix (e.g. 'F' after a dot, all-caps 3-4 chars like SPY style)
+    3. Default → "Compute & Platform" (most common new additions)
+    """
+    t = ticker.upper().strip()
+    if t in TICKER_LAYER_MAP:
+        return TICKER_LAYER_MAP[t]
+    # Heuristic: ETF tickers often end in specific letters or contain known fund families
+    for kw in _ETF_KEYWORDS:
+        if kw in t.lower():
+            return "Core (50%)"
+    return "Compute & Platform"
+
+
 TICKER_NAMES = {
     "VOO":   "Vanguard S&P 500 ETF",
     "CCJ":   "Cameco — אורניום",
