@@ -9,9 +9,9 @@ PORTFOLIO_FILE = PROJECT_ROOT / "portfolio.json"
 # ── Portfolio layers ───────────────────────────────────────────────────────────
 TICKERS_BY_LAYER = {
     "Core (50%)":             ["VOO"],
-    "Physical Infrastructure": ["CCJ", "FCX", "ETN", "VRT"],
+    "Physical Infrastructure": ["CCJ", "FCX", "ETN", "VRT", "EQX"],
     "Compute & Platform":      ["AMD", "AMZN", "GOOGL"],
-    "Security & Stability":    ["CRWD", "ESLT", "EQX"],
+    "Security & Stability":    ["CRWD", "ESLT"],
     "Healthcare & Pharma":     ["TEVA"],
 }
 
