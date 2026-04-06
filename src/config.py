@@ -11,7 +11,8 @@ TICKERS_BY_LAYER = {
     "Core (50%)":             ["VOO"],
     "Physical Infrastructure": ["CCJ", "FCX", "ETN", "VRT"],
     "Compute & Platform":      ["AMD", "AMZN", "GOOGL"],
-    "Security & Stability":    ["CRWD", "ESLT", "TEVA", "EQX"],
+    "Security & Stability":    ["CRWD", "ESLT", "EQX"],
+    "Healthcare & Pharma":     ["TEVA"],
 }
 
 LAYER_COLORS = {
@@ -19,6 +20,7 @@ LAYER_COLORS = {
     "Physical Infrastructure": "#FF9800",
     "Compute & Platform":      "#2196F3",
     "Security & Stability":    "#9C27B0",
+    "Healthcare & Pharma":     "#E91E63",
 }
 
 # Reverse map: ticker → layer.  Built from TICKERS_BY_LAYER + extended coverage.
@@ -145,6 +147,7 @@ SECTOR_ETFS = {
     "Physical Infrastructure": "XLI",
     "Compute & Platform":      "XLK",
     "Security & Stability":    "XLP",
+    "Healthcare & Pharma":     "XLV",
 }
 
 # ── Red flag thresholds ────────────────────────────────────────────────────────
