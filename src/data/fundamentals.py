@@ -17,6 +17,7 @@ except ImportError:
 _FIELDS = {
     "P/E":          "pe",
     "Forward P/E":  "forward_pe",
+    "PEG":          "peg",
     "EPS (ttm)":    "eps_ttm",
     "EPS next Y":   "eps_next_y",
     "EPS next Q":   "eps_next_q",

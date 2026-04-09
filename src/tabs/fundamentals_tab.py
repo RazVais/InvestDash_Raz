@@ -30,16 +30,47 @@ def _render_valuation_table(tickers, fundamentals, prices):
     _TH = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:1px solid #333;font-size:11px;text-align:right"
     _TD = "padding:5px 8px;font-size:11px"
 
-    cols1 = [("pe","P/E"), ("forward_pe","P/E קדימה"), ("eps_ttm","EPS"), ("roe","ROE"),
-             ("roa","ROA"), ("pb","P/B"), ("ps","P/S"), ("debt_eq","Debt/Eq")]
+    cols1 = [("pe","P/E"), ("forward_pe","P/E קדימה"), ("peg","PEG"), ("pegy","PEGY"),
+             ("eps_ttm","EPS"), ("roe","ROE"), ("roa","ROA"), ("pb","P/B"), ("ps","P/S"), ("debt_eq","Debt/Eq")]
     cols2 = [("market_cap","שווי שוק"), ("short_float","Short Float"), ("inst_own","מוסדי"),
              ("sector","סקטור"), ("industry","תעשייה"), ("div_yield_fv","דיבידנד %")]
+
+    def _peg_color(val_str: str) -> str:
+        """Green <1 (undervalued growth), yellow 1–2 (fair), red >2 (expensive)."""
+        try:
+            v = float(str(val_str).replace(",", ""))
+            if v <= 0:
+                return COLOR["text_dim"]
+            if v < 1.0:
+                return COLOR["positive"]
+            if v < 2.0:
+                return COLOR["warning"]
+            return COLOR["negative"]
+        except (ValueError, TypeError):
+            return COLOR["text_dim"]
+
+    def _compute_pegy(f: dict) -> str:
+        """PEGY = P/E ÷ (EPS_growth% + div_yield%). Lynch: <1 = attractive."""
+        try:
+            pe   = float(str(f.get("pe",  "")).replace(",", ""))
+            grow = float(str(f.get("eps_next_y", "")).replace("%", "").replace(",", ""))
+            dy   = float(str(f.get("div_yield_fv", "0")).replace("%", "").replace(",", ""))
+            denom = grow + dy
+            if pe <= 0 or denom <= 0:
+                return "—"
+            return f"{pe / denom:.2f}"
+        except (ValueError, TypeError):
+            return "—"
 
     for title, cols in [("ערכים והכנסות", cols1), ("שוק ובעלות", cols2)]:
         st.markdown(f'<b style="direction:rtl">{title}</b>', unsafe_allow_html=True)
         rows = ""
         for t in tickers:
             f = fundamentals.get(t, {})
+            # Inject computed PEGY into the fundamentals dict for this render
+            f = dict(f)
+            if t not in PORTFOLIO_ETFS:
+                f["pegy"] = _compute_pegy(f)
             if t in PORTFOLIO_ETFS:
                 # ETF: replace all data cells with a single spanning note
                 etf_note = (
@@ -54,6 +85,10 @@ def _render_valuation_table(tickers, fundamentals, prices):
                 row = f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
                 for key, _ in cols:
                     val = f.get(key, "—")
+                    # Color PEG and PEGY
+                    if key in ("peg", "pegy") and val and val != "—":
+                        color = _peg_color(val)
+                        val = f'<span style="color:{color};font-weight:700">{val}</span>'
                     row += f'<td style="{_TD}">{val}</td>'
             rows += f"<tr>{row}</tr>"
 
@@ -72,6 +107,8 @@ def _render_valuation_table(tickers, fundamentals, prices):
     term_glossary([
         ("P/E",         "Price-to-Earnings — מחיר המניה חלקי הרווח למניה (EPS). P/E גבוה = ציפיות צמיחה גבוהות. S&P500 ממוצע ≈ 20–25."),
         ("P/E קדימה",   "Forward P/E — מחיר המניה חלקי תחזית הרווח ל-12 חודשים הבאים. נמוך מ-P/E ההיסטורי = צמיחה צפויה."),
+        ("PEG",         "Price/Earnings-to-Growth (Lynch) — P/E חלקי קצב צמיחת הרווח השנתי. מתחת 1 = צמיחה זולה 🟢, 1–2 = הוגן 🟡, מעל 2 = יקר 🔴."),
+        ("PEGY",        "PEG + Yield (Lynch) — P/E חלקי (צמיחה% + תשואת דיבידנד%). מתאים לחברות שמחלקות דיבידנד — מתחת 1 = אטרקטיבי."),
         ("EPS",         "Earnings Per Share (TTM) — רווח למניה ב-12 חודשים האחרונים (Trailing Twelve Months)."),
         ("ROE",         "Return on Equity — תשואה על ההון העצמי. מעל 15% = ניהול הון יעיל. מדד חשוב לרווחיות."),
         ("ROA",         "Return on Assets — תשואה על הנכסים הכוללים. מדד ליעילות השימוש בנכסי החברה."),
