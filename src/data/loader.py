@@ -35,7 +35,7 @@ _TAB_NEEDS = {
     "סקירה":        frozenset(["prices", "targets", "consensus", "macro"]),
     "תיק שלי":      frozenset(["prices"]),
     "גרפים":        frozenset(["prices", "targets"]),
-    "אנליסטים":     frozenset(["prices", "consensus", "targets", "upgrades"]),
+    "אנליסטים":     frozenset(["prices", "consensus", "targets", "upgrades", "macro"]),
     "פונדמנטלס":   frozenset(["prices", "fundamentals", "earnings"]),
     "דגלים אדומים": frozenset(["prices", "consensus", "upgrades", "commodities"]),
     "חדשות":        frozenset(["news"]),

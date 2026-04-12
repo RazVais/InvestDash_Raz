@@ -1,8 +1,9 @@
-"""Shared UI helpers — section titles, color legends, term glossaries."""
+"""Shared UI helpers — section titles, color legends, term glossaries, treemap."""
 
+import plotly.graph_objects as go
 import streamlit as st
 
-from src.config import COLOR
+from src.config import COLOR, LAYER_COLORS, TICKER_NAMES
 
 
 def section_title(title, subtitle=""):
@@ -39,6 +40,96 @@ def color_legend(items):
         f'border-radius:4px">{dots}</div>',
         unsafe_allow_html=True,
     )
+
+
+def _change_hex(change: float) -> str:
+    """Map a daily % change to a Finviz-style heatmap color (dark-theme)."""
+    if change >= 3.0:
+        return "#1b5e20"
+    if change >= 1.5:
+        return "#2e7d32"
+    if change >= 0.3:
+        return "#388e3c"
+    if change > -0.3:
+        return "#2d3748"
+    if change > -1.5:
+        return "#c62828"
+    if change > -3.0:
+        return "#b71c1c"
+    return "#7f0000"
+
+
+def portfolio_treemap(portfolio: dict, prices: dict, height: int = 300) -> None:
+    """
+    Finviz-style portfolio treemap: grouped by layer (parent), sized by portfolio
+    value, colored by daily % change.  Watchlist positions (0 shares) appear as
+    small boxes with a 👁 badge so they stay visible but don't dominate sizing.
+    """
+    ids, labels, parents, values, marker_colors, hovertext = [], [], [], [], [], []
+
+    for layer, lots in portfolio["layers"].items():
+        ids.append(layer)
+        labels.append(layer)
+        parents.append("")
+        values.append(0)
+        marker_colors.append(LAYER_COLORS.get(layer, "#444444"))
+        hovertext.append(f"<b>{layer}</b>")
+
+        # Aggregate shares per ticker within this layer
+        seen: dict = {}
+        for lot in lots:
+            t = lot["ticker"]
+            seen[t] = seen.get(t, 0) + lot.get("shares", 0)
+
+        for t, total_shares in seen.items():
+            p = prices.get(t)
+            if not p:
+                continue
+            price  = p.get("price", 0) or 0.0
+            change = p.get("change", 0.0) or 0.0
+
+            is_watchlist = total_shares <= 0
+            val = (price * total_shares) if not is_watchlist else max(price * 0.05, 1.0)
+
+            name = TICKER_NAMES.get(t, t)
+            badge = " 👁" if is_watchlist else ""
+            label = f"{t}{badge}<br>{change:+.1f}%"
+            hover = (
+                f"<b>{t}</b> — {name}<br>"
+                f"מחיר: ${price:.2f}  ({change:+.2f}%)"
+                + (f"<br>שווי: ${val:,.0f}" if not is_watchlist else "<br><i>Watchlist</i>")
+            )
+
+            ids.append(f"{layer}/{t}")
+            labels.append(label)
+            parents.append(layer)
+            values.append(val)
+            marker_colors.append(_change_hex(change))
+            hovertext.append(hover)
+
+    if len(ids) <= len(portfolio.get("layers", {})):
+        st.caption("אין נתוני מחיר")
+        return
+
+    fig = go.Figure(go.Treemap(
+        ids=ids,
+        labels=labels,
+        parents=parents,
+        values=values,
+        branchvalues="total",
+        marker_colors=marker_colors,
+        hovertext=hovertext,
+        hoverinfo="text",
+        textfont={"size": 11, "color": "#ffffff"},
+        pathbar_visible=False,
+    ))
+    fig.update_layout(
+        height=height,
+        margin={"t": 0, "b": 0, "l": 0, "r": 0},
+        paper_bgcolor="rgba(0,0,0,0)",
+        font={"color": "#ffffff"},
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def term_glossary(terms, label="📖 מקרא מונחים"):

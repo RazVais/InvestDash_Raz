@@ -18,7 +18,10 @@ Live stats bar at the top of every page:
 - **סקירה (Overview)** — macro strip (VIX, 10Y yield, DXY), performance table with upside % and alpha vs VOO, portfolio P&L summary, sector allocation donut chart, 1-year correlation matrix heatmap
 - **תיק שלי (Portfolio)** — multi-lot model: track multiple buy events per ticker with individual dates, prices, and P&L; add/edit/remove individual lots or entire tickers
 - **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO
-- **אנליסטים (Analysts)** — consensus table with mini distribution bar (Strong Buy/Buy/Hold/Sell/Strong Sell), price target range chart with error bars, recent upgrades/downgrades with major firm highlighting (JPM, GS, MS, BofA, etc.)
+- **אנליסטים (Analysts)** — three sub-tabs:
+  - **📋 ניתוח יומי** — Finviz-style heatmap, market pulse KPIs, analyst conviction scatter matrix, Claude Haiku per-ticker daily brief
+  - **⏰ תזמון קנייה** — AI buy timing: 0-100 signal score (RSI, SMA50/200, Bollinger, analyst upside, VIX, Damodaran sector P/E) + Claude Haiku Hebrew verdict card using Buffett/Lynch, Damodaran, and Breitstein frameworks; tickers ranked best opportunity first
+  - **👥 קונצנזוס ואנליסטים** — consensus table with mini distribution bar, price target range chart with error bars, recent upgrades/downgrades with major firm highlighting
 - **פונדמנטלס (Fundamentals)** — P/E, Fwd P/E, EPS, ROE, ROA, P/B, P/S, Debt/Equity, Market Cap, Short Float, Institutional Ownership, Sector, Industry via Finviz; next earnings countdown with urgency colors; dividend yield; EPS trend on-demand
 
 ### Red Flags (bell icon in header)
@@ -34,6 +37,7 @@ All flags 100% automated (no manual entries): commodity price checks (uranium, c
 - **Market-aware caching** — data fetched once per trading day; Refresh button disabled on weekends/holidays
 - **Two-tier parallel loading** — active tab data loaded immediately in ThreadPoolExecutor; remaining keys pre-warmed in background daemon thread
 - **Macro sparklines** — 7-day SVG sparklines for VIX, 10Y yield, DXY in sidebar (green/red trend coloring)
+- **Damodaran sector benchmarks** — annual P/E, EV/EBITDA, and beta data fetched from Prof. Aswath Damodaran's NYU public datasets (no auth required, cached 7 days)
 
 ## Setup
 
@@ -83,7 +87,9 @@ src/config.py         ← all constants, thresholds, Hebrew strings
 src/market.py         ← trading day detection and market status
 src/portfolio.py      ← multi-lot JSON persistence
 src/data/             ← individual data fetchers with @st.cache_data
+  damodaran.py        ← Damodaran NYU sector benchmarks (P/E, EV/EBITDA, beta) — 7d cache
 src/tabs/             ← one module per tab
+  analysts_tab.py     ← ניתוח יומי | ⏰ תזמון קנייה | קונצנזוס
   daily_brief_tab.py  ← 📋 יומי: per-ticker brief + Claude Haiku narrative
   analysis_tab.py     ← 🔬 ניתוח: 5-filter Claude Haiku evaluation
 dashboard.py          ← thin entry point (page config, KPI header, routing)

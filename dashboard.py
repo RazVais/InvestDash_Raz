@@ -31,7 +31,6 @@ from src.tabs.fundamentals_tab import render_fundamentals
 from src.tabs.red_flags        import render_red_flags
 from src.tabs.news_tab         import render_news
 from src.tabs.suggestions_tab  import render_suggestions
-from src.tabs.daily_brief_tab  import render_daily_brief
 from src.tabs.analysis_tab     import render_analysis
 
 _log = get_logger(__name__)
@@ -45,7 +44,7 @@ _SIDEBAR_ICONS = {
     "אנליסטים":  "👥",
     "פונדמנטלס": "📋",
 }
-_SECONDARY_TABS = ["חדשות", "💡 המלצות", "📋 יומי", "🔬 ניתוח"]
+_SECONDARY_TABS = ["חדשות", "💡 המלצות", "🔬 ניתוח"]
 _ALL_TABS = _SIDEBAR_TABS + _SECONDARY_TABS + ["דגלים אדומים"]
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -646,7 +645,7 @@ def _render_tab_content(active, portfolio, data, market_state, td_str, api_key, 
     elif active == "גרפים":
         render_charts(portfolio, data)
     elif active == "אנליסטים":
-        render_analysts(portfolio, data)
+        render_analysts(portfolio, data, td_str, claude_api_key)
     elif active == "פונדמנטלס":
         render_fundamentals(portfolio, data, td_str)
     elif active == "דגלים אדומים":
@@ -655,8 +654,6 @@ def _render_tab_content(active, portfolio, data, market_state, td_str, api_key, 
         render_news(portfolio, data, td_str, claude_api_key)
     elif active == "💡 המלצות":
         render_suggestions(portfolio, data, td_str, api_key)
-    elif active == "📋 יומי":
-        render_daily_brief(portfolio, data, td_str, claude_api_key)
     elif active == "🔬 ניתוח":
         render_analysis(portfolio, data, td_str, api_key, claude_api_key)
 

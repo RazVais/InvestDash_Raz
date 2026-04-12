@@ -1,12 +1,13 @@
 """Daily brief tab — per-ticker feed: price, analyst consensus, flags, and alpha vs VOO."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
-from src.config import COLOR, TICKER_NAMES
+from src.config import COLOR, PORTFOLIO_ETFS, TICKER_NAMES
 from src.portfolio import all_tickers
 from src.tabs.red_flags import get_all_flag_statuses
 from src.ui_helpers import section_title
@@ -41,6 +42,68 @@ def _generate_ticker_brief(
         return msg.content[0].text.strip()
     except Exception:
         return ""
+
+
+# ── Brief data helpers ────────────────────────────────────────────────────────
+
+def _build_brief_data_str(label, total, upside_str, bad_flags, alpha, alpha_str):
+    """Assemble the brief_data_str passed to _generate_ticker_brief.
+    Extracted so both the parallel pre-warmer and the card renderer produce
+    identical strings → guaranteed cache hit during rendering."""
+    lines = [f"קונצנזוס: {label} ({total} אנליסטים)"]
+    if upside_str != "—":
+        lines.append(f"אפסייד: {upside_str}")
+    if bad_flags:
+        lines.append(f"דגלים: {', '.join(f['flag'] for f in bad_flags)}")
+    if alpha is not None:
+        lines.append(f"אלפא חודשי vs VOO: {alpha_str}")
+    return "\n".join(lines)
+
+
+def _warm_all_briefs(tickers, data, all_flags, voo_history, td_str, claude_api_key):
+    """Fire all Claude Haiku brief requests in parallel before the card loop.
+
+    Sequential: 10 tickers × ~3 s/call = ~30 s total.
+    Parallel (5 workers): max(~3 s per batch) = ~6 s total.
+    The card loop then hits the @st.cache_data cache instantly for each ticker.
+
+    ETF tickers (VOO, XAR, …) are skipped — they have no per-stock narrative.
+    """
+    if not claude_api_key:
+        return
+
+    prices    = data.get("prices", {})
+    consensus = data.get("consensus", {})
+    targets   = data.get("targets", {})
+
+    def _warm_one(ticker):
+        if ticker in PORTFOLIO_ETFS:
+            return
+        p_data = prices.get(ticker)
+        if not p_data:
+            return
+        price  = p_data.get("price", 0.0) or 0.0
+        con    = consensus.get(ticker) or {}
+        tgt    = targets.get(ticker)
+
+        label  = con.get("label", "N/A")
+        total  = con.get("total", 0)
+
+        upside_str = "—"
+        if tgt and tgt.get("mean") and price > 0:
+            upside_str = f"{(tgt['mean'] - price) / price * 100.0:+.1f}%"
+
+        alpha = _compute_alpha(p_data.get("history"), voo_history, lookback=21)
+        alpha_str = f"{alpha:+.1f}%" if alpha is not None else "—"
+
+        bad_flags = [f for f in all_flags
+                     if f["ticker"] == ticker and f["status"] in ("triggered", "watch")]
+
+        brief_data_str = _build_brief_data_str(label, total, upside_str, bad_flags, alpha, alpha_str)
+        _generate_ticker_brief(ticker, brief_data_str, td_str, claude_api_key)
+
+    with ThreadPoolExecutor(max_workers=min(len(tickers), 5)) as ex:
+        list(ex.map(_warm_one, tickers))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -180,16 +243,10 @@ def _card_flags_html(ticker, all_flags):
 
 def _card_ai_html(ticker, label, total, upside_str, bad_flags, alpha, alpha_str, td_str, claude_api_key):
     """Build the optional AI brief section HTML."""
-    if not claude_api_key:
+    if not claude_api_key or ticker in PORTFOLIO_ETFS:
         return ""
-    brief_data_lines = [f"קונצנזוס: {label} ({total} אנליסטים)"]
-    if upside_str != "—":
-        brief_data_lines.append(f"אפסייד: {upside_str}")
-    if bad_flags:
-        brief_data_lines.append(f"דגלים: {', '.join(f['flag'] for f in bad_flags)}")
-    if alpha is not None:
-        brief_data_lines.append(f"אלפא חודשי vs VOO: {alpha_str}")
-    brief_text = _generate_ticker_brief(ticker, "\n".join(brief_data_lines), td_str, claude_api_key)
+    brief_data_str = _build_brief_data_str(label, total, upside_str, bad_flags, alpha, alpha_str)
+    brief_text = _generate_ticker_brief(ticker, brief_data_str, td_str, claude_api_key)
     if not brief_text:
         return ""
     bullets = "".join(
@@ -337,6 +394,12 @@ def render_daily_brief(
 
     # Sort tickers: triggered → watch → ok/nodata, then alphabetically within group
     sorted_tickers = _sort_tickers_by_flag(tickers, all_flags)
+
+    # Pre-warm all AI briefs in parallel — turns ~30 s sequential into ~6 s parallel.
+    # Cache hits from @st.cache_data make the card loop itself near-instant.
+    if claude_api_key:
+        with st.spinner("🤖 מכין סיכומי AI במקביל..."):
+            _warm_all_briefs(sorted_tickers, data, all_flags, voo_history, td_str, claude_api_key)
 
     # Two-column layout
     col_left, col_right = st.columns([1, 1])

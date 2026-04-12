@@ -1,8 +1,7 @@
 """Market state detection — NYSE calendar aware, graceful fallback."""
 
 from datetime import datetime, timedelta
-
-import pytz
+from zoneinfo import ZoneInfo
 
 from src.config import HE
 
@@ -13,7 +12,7 @@ try:
 except Exception:
     CALENDAR_AVAILABLE = False
 
-NYSE_TZ = pytz.timezone("America/New_York")
+NYSE_TZ = ZoneInfo("America/New_York")
 
 
 def get_market_state():

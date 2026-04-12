@@ -6,11 +6,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.config import COLOR, HE, LAYER_COLORS, TICKER_NAMES
+from src.config import COLOR, HE, LAYER_COLORS, SECTOR_ETFS, TICKER_NAMES
 from src.data.prices import lookup_buy_price
 from src.data.technicals import compute_correlation_matrix
 from src.portfolio import add_lot, all_tickers, get_layer_for_ticker, lots_for_ticker, remove_ticker
-from src.ui_helpers import color_legend, section_title, term_glossary
+from src.ui_helpers import color_legend, portfolio_treemap, section_title, term_glossary
 
 
 def render_overview(portfolio, data, market_state, td_str):
@@ -29,6 +29,8 @@ def render_overview(portfolio, data, market_state, td_str):
         _render_pnl_summary(portfolio, prices)
     with col2:
         _render_allocation_donut(portfolio, prices)
+    st.divider()
+    _render_portfolio_heatmap(portfolio, prices)
     st.divider()
     _render_correlation_matrix(prices)
 
@@ -118,10 +120,21 @@ def _render_macro_strip(macro):
 def _render_performance_table(portfolio, prices, targets, consensus):
     section_title("ביצועי תיק", "מחיר נוכחי, ביצוע שנתי מול VOO ויעדי אנליסטים לכל נייר")
 
-    voo_p = prices.get("VOO")
-    # Use 1-year VOO return as alpha baseline
-    voo_hist = voo_p["history"] if voo_p and voo_p.get("history") is not None else None
-    voo_1y = ((voo_hist.iloc[-1] / voo_hist.iloc[0]) - 1) * 100 if voo_hist is not None and len(voo_hist) > 1 else 0.0
+    # Pre-compute 1Y return for each layer's benchmark ETF (fallback: VOO)
+    def _bench_1y(layer_name):
+        bench = SECTOR_ETFS.get(layer_name, "VOO")
+        p = prices.get(bench)
+        if p and p.get("history") is not None:
+            h = p["history"]
+            if len(h) > 1:
+                return ((h.iloc[-1] / h.iloc[0]) - 1) * 100, bench
+        # fallback to VOO
+        voo_p = prices.get("VOO")
+        if voo_p and voo_p.get("history") is not None:
+            h = voo_p["history"]
+            if len(h) > 1:
+                return ((h.iloc[-1] / h.iloc[0]) - 1) * 100, "VOO"
+        return 0.0, "VOO"
 
     rows = []
     for t in all_tickers(portfolio):
@@ -147,9 +160,13 @@ def _render_performance_table(portfolio, prices, targets, consensus):
         alpha_str = "—"
         if p and p.get("history") is not None and len(p["history"]) > 1:
             t_1y = ((p["history"].iloc[-1] / p["history"].iloc[0]) - 1) * 100
-            alpha = t_1y - voo_1y
+            bench_return, bench_ticker = _bench_1y(layer)
+            alpha = t_1y - bench_return
             ac    = COLOR["positive"] if alpha >= 0 else COLOR["negative"]
-            alpha_str = f'<span style="color:{ac}">{alpha:+.1f}%</span>'
+            alpha_str = (
+                f'<span style="color:{ac}">{alpha:+.1f}%</span>'
+                f'<span style="font-size:9px;color:{COLOR["dim"]}"> vs {bench_ticker}</span>'
+            )
 
         label = con.get("label", "N/A")
         lc    = COLOR["positive"] if "Buy" in label else (COLOR["negative"] if "Sell" in label else COLOR["neutral"])
@@ -196,7 +213,7 @@ def _render_performance_table(portfolio, prices, targets, consensus):
     term_glossary([
         ("שינוי %",      "שינוי אחוזי ביחס למחיר הסגירה של יום המסחר הקודם."),
         ("אפסייד %",     "פוטנציאל עלייה לפי יעד המחיר הממוצע של האנליסטים: (יעד − מחיר) / מחיר × 100."),
-        ("Alpha 1Y",     "תשואת הנייר ב-12 חודשים האחרונים פחות תשואת VOO (S&P 500). ערך חיובי = ביצועי יתר."),
+        ("Alpha 1Y",     "תשואת הנייר ב-12 חודשים האחרונים פחות תשואת ה-ETF של השכבה (למשל XAR לביטחון, VOO לליבה). ערך חיובי = ביצועי יתר."),
         ("Strong Buy",   "לפחות 70% מהאנליסטים ממליצים קנייה או קנייה חזקה."),
         ("Buy",          "50%–70% מהאנליסטים ממליצים קנייה."),
         ("Hold",         "קונצנזוס ניטרלי — המתן, אל תוסיף ואל תמכור."),
@@ -279,6 +296,36 @@ def _render_allocation_donut(portfolio, prices):
         font_color="#ffffff",
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_portfolio_heatmap(portfolio, prices):
+    """Finviz-style portfolio heatmap: ticker boxes sized by value, colored by daily change."""
+    section_title("מפת חום תיק", "גודל הריבוע = שווי ההחזקה | צבע = שינוי יומי | 👁 = ווצ'ליסט")
+
+    col_heat, col_legend = st.columns([5, 1])
+    with col_heat:
+        portfolio_treemap(portfolio, prices, height=280)
+    with col_legend:
+        # Manual color scale legend
+        scale = [
+            ("#1b5e20", "+3%+"),
+            ("#2e7d32", "+1.5%"),
+            ("#388e3c", "+0.3%"),
+            ("#2d3748", "  0%"),
+            ("#c62828", "−0.3%"),
+            ("#b71c1c", "−1.5%"),
+            ("#7f0000", "−3%−"),
+        ]
+        items_html = "".join(
+            f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">'
+            f'<div style="width:14px;height:14px;border-radius:2px;background:{c};flex-shrink:0"></div>'
+            f'<span style="font-size:10px;color:#888">{lbl}</span></div>'
+            for c, lbl in scale
+        )
+        st.markdown(
+            f'<div style="padding-top:40px">{items_html}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_correlation_matrix(prices):

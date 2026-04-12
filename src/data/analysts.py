@@ -176,11 +176,17 @@ def _consensus_label(sb, b, h, s, ss, total):
 # ── EPS trend (on-demand) ─────────────────────────────────────────────────────
 @st.cache_data(ttl=86400 * 7)
 def get_eps_trend(ticker, trading_day):
-    try:
-        df = yf.Ticker(ticker).eps_trend
-        return df if df is not None and not df.empty else None
-    except Exception as e:
-        return str(e)
+    """Fetch EPS trend. yfinance 0.2.54+ removed .eps_trend; falls back to earnings_estimate."""
+    stock = yf.Ticker(ticker)
+    # Try new attribute name first
+    for attr in ("earnings_estimate", "eps_trend"):
+        try:
+            df = getattr(stock, attr, None)
+            if df is not None and not df.empty:
+                return df
+        except Exception:
+            pass
+    return None
 
 
 # ── Earnings calendar ─────────────────────────────────────────────────────────

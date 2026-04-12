@@ -11,7 +11,7 @@ TICKERS_BY_LAYER = {
     "Core (50%)":             ["VOO"],
     "Physical Infrastructure": ["CCJ", "FCX", "ETN", "VRT", "EQX"],
     "Compute & Platform":      ["AMD", "AMZN", "GOOGL"],
-    "Security & Stability":    ["CRWD", "ESLT"],
+    "Security & Stability":    ["XAR", "CRWD", "ESLT"],
     "Healthcare & Pharma":     ["TEVA"],
 }
 
@@ -122,6 +122,7 @@ def guess_layer(ticker: str) -> str:
 
 TICKER_NAMES = {
     "VOO":   "Vanguard S&P 500 ETF",
+    "XAR":   "SPDR S&P Aerospace & Defense ETF",
     "CCJ":   "Cameco — אורניום",
     "FCX":   "Freeport-McMoRan — נחושת",
     "ETN":   "Eaton — תשתיות חשמל",
@@ -139,14 +140,14 @@ TICKER_NAMES = {
 KNOWN_LIMITED_TICKERS = {"ESLT"}
 
 # ETFs in the portfolio — no P/E, ROE, EPS etc. (no earnings, no equity returns)
-PORTFOLIO_ETFS = {"VOO"}
+PORTFOLIO_ETFS = {"VOO", "XAR"}
 
 # Sector ETF benchmarks for relative-strength computation
 SECTOR_ETFS = {
     "Core (50%)":             "SPY",
     "Physical Infrastructure": "XLI",
     "Compute & Platform":      "XLK",
-    "Security & Stability":    "XLP",
+    "Security & Stability":    "XAR",
     "Healthcare & Pharma":     "XLV",
 }
 
@@ -334,6 +335,13 @@ SUGGESTIONS = [
 # ── Static company briefs ─────────────────────────────────────────────────────
 # Shown in the news tab. Hebrew text — displayed RTL in the UI.
 TICKER_BRIEFS = {
+    "XAR": (
+        "XAR (SPDR S&P Aerospace & Defense ETF) עוקב אחרי מדד S&P Aerospace & Defense — "
+        "המורכב מחברות הביטחון, תעופה ואוויריות הגדולות בארה\"ב. "
+        "הוא כולל ניירות כמו RTX, LMT, NOC, GD ו-L3Harris, הנהנות מהגידול בתקציבי NATO ומשרד ההגנה האמריקאי. "
+        "XAR משמש כנקודת ייחוס (Ground Zero) לשכבת האבטחה והביטחון בתיק — "
+        "ביצועי CRWD ו-ESLT נמדדים אל מולו, כשם ש-VOO משמש כנקודת ייחוס לשוק הרחב."
+    ),
     "VOO": (
         "קרן הסל Vanguard S&P 500 עוקבת אחרי מדד S&P 500 — 500 החברות הגדולות בארה\"ב לפי שווי שוק. "
         "עם דמי ניהול של 0.03% בלבד, היא אחת מקרנות המניות הזולות והנזילות ביותר בעולם. "
@@ -404,6 +412,7 @@ TICKER_BRIEFS = {
 # ── Static sector / industry labels ───────────────────────────────────────────
 TICKER_SECTOR = {
     "VOO":   ("ETFs", "Broad Market"),
+    "XAR":   ("Defense", "Aerospace & Defense ETF"),
     "CCJ":   ("Energy", "Uranium Mining"),
     "FCX":   ("Materials", "Copper Mining"),
     "ETN":   ("Industrials", "Electrical Equipment"),
@@ -422,6 +431,7 @@ TICKER_SECTOR = {
 # Used in the news tab company brief. Format: {ticker: [(symbol, display_name), ...]}
 TICKER_PEERS = {
     "VOO":   [("SPY", "SPDR S&P 500"), ("IVV", "iShares S&P 500"), ("QQQ", "Invesco NASDAQ-100")],
+    "XAR":   [("ITA", "iShares U.S. Aerospace & Defense ETF"), ("LMT", "Lockheed Martin"), ("RTX", "RTX Corp (Raytheon)")],
     "CCJ":   [("NXE", "NexGen Energy"), ("URA", "Global X Uranium ETF"), ("DNN", "Denison Mines")],
     "FCX":   [("SCCO", "Southern Copper"), ("BHP", "BHP Group"), ("TECK", "Teck Resources")],
     "ETN":   [("EMR", "Emerson Electric"), ("ROK", "Rockwell Automation"), ("ABB", "ABB Ltd")],

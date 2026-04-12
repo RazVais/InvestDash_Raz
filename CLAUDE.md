@@ -50,13 +50,14 @@ RazDashboard/
 │   │   ├── technicals.py        ← RSI, SMA, EMA, Bollinger, correlation — pure pandas
 │   │   ├── macro.py             ← VIX, 10Y yield, DXY + 7-day history; commodities
 │   │   ├── news.py              ← get_news() — 5 articles per ticker
+│   │   ├── damodaran.py         ← Damodaran NYU sector benchmarks (P/E, EV/EBITDA, beta) — 7d cache
 │   │   └── loader.py            ← load_all_data() two-tier parallel orchestrator
 │   └── tabs/
 │       ├── __init__.py
 │       ├── overview.py          ← סקירה: macro strip, performance table, donut, correlation
 │       ├── portfolio_tab.py     ← תיק שלי: multi-lot P&L table, add/edit/remove forms
 │       ├── charts.py            ← גרפים: 1yr candlestick + RSI/MAs/Bollinger
-│       ├── analysts_tab.py      ← אנליסטים: consensus, price targets, upgrades
+│       ├── analysts_tab.py      ← אנליסטים: ניתוח יומי | ⏰ תזמון קנייה | קונצנזוס
 │       ├── fundamentals_tab.py  ← פונדמנטלס: valuation, earnings dates, dividends
 │       ├── red_flags.py         ← דגלים אדומים: all flags automated, NO "ידני"
 │       ├── news_tab.py          ← חדשות: latest articles per ticker
@@ -77,9 +78,12 @@ RazDashboard/
 | Layer | Tickers |
 |---|---|
 | Core (50%) | VOO |
-| Physical Infrastructure | CCJ, FCX, ETN, VRT |
+| Physical Infrastructure | CCJ, FCX, ETN, VRT, EQX |
 | Compute & Platform | AMD, AMZN, GOOGL |
-| Security & Stability | CRWD, ESLT, TEVA, EQX |
+| Security & Stability | XAR (benchmark ETF), CRWD, ESLT |
+| Healthcare & Pharma | TEVA |
+
+**XAR note**: SPDR S&P Aerospace & Defense ETF — tracked at 0 shares as the "ground zero" (sector benchmark) for Security & Stability, the same way VOO benchmarks the overall portfolio. Alpha for CRWD and ESLT is measured vs XAR. It is in `PORTFOLIO_ETFS` so fundamentals/EPS tabs skip it.
 
 **ESLT note**: Israeli stock listed on TASE. Minimal US analyst coverage expected — empty consensus, no upgrades/downgrades, may fail Finviz. This is normal, not a bug.
 
@@ -112,6 +116,8 @@ RazDashboard/
 | `get_buy_price` | 30d | Historical cost basis |
 | `_generate_ticker_brief` | 3600s (1h) | Claude Haiku per-ticker Hebrew narrative (daily_brief_tab) |
 | `_run_five_filter_eval` | 3600s (1h) | Claude Haiku 5-filter JSON evaluation (analysis_tab) |
+| `_run_buy_timing_eval` | 3600s (1h) | Claude Haiku buy timing verdict per ticker (analysts_tab) |
+| `get_damodaran_sector_data` | 7d | Damodaran NYU sector P/E, EV/EBITDA, beta benchmarks |
 
 ## Red Flag Logic (all automated, NO "ידני")
 
@@ -154,6 +160,8 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | 2026-04-03 | analysis_tab / anthropic missing | `anthropic` package listed in requirements.txt but not installed in venv → `No module named 'anthropic'` at runtime | Fixed: `pip install anthropic` in the venv |
 | 2026-04-03 | analysis_tab / 5-filter silent errors | `except Exception: pass` swallowed all evaluation errors → empty stars with no feedback | Fixed: return `{"_error": str(exc)}` and display warning banner with retry button |
 | 2026-04-03 | analysis_tab / JSON parse error | Claude Haiku embedded Hebrew quotation marks (`"`) inside JSON string values → `Expecting ',' delimiter` | Fixed: English-only prompt + `_safe_parse_json()` that strips trailing commas before retry |
+| 2026-04-12 | analysts_tab / buy timing JSON | Claude Haiku returned ```json fences; `_safe_parse_json` regex `[a-z]*\n?` misses uppercase + Windows `\r\n` → parse fails | Fixed: `_strip_fences()` pre-processor with case-insensitive regex runs before `_safe_parse_json`; prompt updated with explicit "no code fences" instruction |
+| 2026-04-12 | analysts.py / EPS trend | `yf.Ticker.eps_trend` removed in yfinance 0.2.54 → always returns None | Fixed: try `earnings_estimate` (new name) first, then `eps_trend` as fallback via `getattr()` |
 
 **Rule for Claude**: Every time a bug is caught or a feature is added, update the table above AND the Changelog below before finishing the task.
 
@@ -169,3 +177,5 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | v2.2 | 2026-04-02 | 📋 יומי daily brief tab; 🔬 ניתוח 5-filter analysis tab (both with Claude Haiku AI, TTL-cached) |
 | v3.0 | 2026-04-03 | Bloomberg-style UI: sidebar primary nav (5 tabs), KPI header (value/P&L/alpha/bell), secondary tab bar (חדשות/המלצות/יומי/ניתוח), macro sparklines (7-day SVG); fixed macro data fetch + crypto.randomUUID |
 | v3.1 | 2026-04-03 | Code quality: extracted 26+ large functions (>60 lines) into focused helpers across dashboard.py, charts.py, daily_brief_tab.py, analysis_tab.py; added SECURITY.md, .env.example, secrets.toml.example; fixed 5-filter silent errors + JSON parse errors |
+| v3.2 | 2026-04-09 | XAR (SPDR Aerospace & Defense ETF) added as Security & Stability sector benchmark; per-layer alpha (XAR for defense, SPY for others); Finviz-style portfolio heatmap in overview + analysts tabs; conviction scatter matrix; 📋 יומי merged into אנליסטים as sub-tab |
+| v3.3 | 2026-04-12 | ⏰ תזמון קנייה tab: AI buy timing scoring (RSI+SMA+Bollinger+upside+VIX+Damodaran P/E) 0-100 score; Damodaran NYU sector benchmark fetcher (P/E, EV/EBITDA, beta); Claude Haiku verdict card with Buffett/Lynch + Damodaran + Breitstein frameworks; fixed JSON fence parsing + EPS trend fallback |
