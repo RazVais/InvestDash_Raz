@@ -44,7 +44,7 @@ RazDashboard/
 │   ├── ui_helpers.py            ← shared UI primitives (section_title, etc.)
 │   ├── data/
 │   │   ├── __init__.py
-│   │   ├── prices.py            ← get_stock_data() — 1yr OHLCV + beta + div_yield
+│   │   ├── prices.py            ← get_stock_data() — 1yr OHLCV + beta + div_yield; get_intraday_data() TTL=300s; get_current_price_or_daily_avg()
 │   │   ├── analysts.py          ← targets, upgrades, consensus, EPS trend
 │   │   ├── fundamentals.py      ← finviz fundamentals (21 fields)
 │   │   ├── technicals.py        ← RSI, SMA, EMA, Bollinger, correlation — pure pandas
@@ -55,9 +55,10 @@ RazDashboard/
 │   └── tabs/
 │       ├── __init__.py
 │       ├── overview.py          ← סקירה: macro strip, performance table, donut, correlation
-│       ├── portfolio_tab.py     ← תיק שלי: multi-lot P&L table, add/edit/remove forms
-│       ├── charts.py            ← גרפים: 1yr candlestick + RSI/MAs/Bollinger
-│       ├── analysts_tab.py      ← אנליסטים: ניתוח יומי | ⏰ תזמון קנייה | קונצנזוס
+│       ├── portfolio_tab.py     ← תיק שלי: multi-lot P&L table, add/edit/remove forms; 📈 יומן עסקאות sub-tab
+│       ├── trading_journal_tab.py ← יומן עסקאות: retroactive P&L analysis from lots + optional CSV upload
+│       ├── charts.py            ← גרפים: 1yr candlestick + RSI/MAs/Bollinger + ORB intraday chart
+│       ├── analysts_tab.py      ← אנליסטים: ניתוח יומי (session AI) | ⏰ תזמון קנייה (score + trailing stop) | קונצנזוס
 │       ├── fundamentals_tab.py  ← פונדמנטלס: valuation, earnings dates, dividends
 │       ├── red_flags.py         ← דגלים אדומים: all flags automated, NO "ידני"
 │       ├── news_tab.py          ← חדשות: latest articles per ticker
@@ -114,9 +115,11 @@ RazDashboard/
 | `get_eps_trend` | 7d | Lazy, on-demand |
 | `get_commodity_prices` | 7d | GC=F, HG=F, UX1=F |
 | `get_buy_price` | 30d | Historical cost basis |
+| `get_intraday_data` | 300s (5min) | Intraday OHLCV for ORB chart; converts to America/New_York tz |
 | `_generate_ticker_brief` | 3600s (1h) | Claude Haiku per-ticker Hebrew narrative (daily_brief_tab) |
 | `_run_five_filter_eval` | 3600s (1h) | Claude Haiku 5-filter JSON evaluation (analysis_tab) |
 | `_run_buy_timing_eval` | 3600s (1h) | Claude Haiku buy timing verdict per ticker (analysts_tab) |
+| `_run_session_analysis` | 3600s (1h) | Claude Haiku all-tickers morning session briefing (analysts_tab) |
 | `get_damodaran_sector_data` | 7d | Damodaran NYU sector P/E, EV/EBITDA, beta benchmarks |
 
 ## Red Flag Logic (all automated, NO "ידני")
@@ -162,6 +165,8 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | 2026-04-03 | analysis_tab / JSON parse error | Claude Haiku embedded Hebrew quotation marks (`"`) inside JSON string values → `Expecting ',' delimiter` | Fixed: English-only prompt + `_safe_parse_json()` that strips trailing commas before retry |
 | 2026-04-12 | analysts_tab / buy timing JSON | Claude Haiku returned ```json fences; `_safe_parse_json` regex `[a-z]*\n?` misses uppercase + Windows `\r\n` → parse fails | Fixed: `_strip_fences()` pre-processor with case-insensitive regex runs before `_safe_parse_json`; prompt updated with explicit "no code fences" instruction |
 | 2026-04-12 | analysts.py / EPS trend | `yf.Ticker.eps_trend` removed in yfinance 0.2.54 → always returns None | Fixed: try `earnings_estimate` (new name) first, then `eps_trend` as fallback via `getattr()` |
+| 2026-04-16 | analysts_tab / session analysis max_tokens | `_run_session_analysis` used `max_tokens=1200` for 13 tickers; response truncated mid-JSON → parse failure | Fixed: raised to `max_tokens=2500`; added `stop_reason=="max_tokens"` detection for clear error message |
+| 2026-04-16 | trading_journal_tab / _compute_by_setup | First line of function filtered df by `setup_type` before the guard `if "setup_type" not in df.columns` → crash when column absent | Fixed: moved guard to top of function |
 
 **Rule for Claude**: Every time a bug is caught or a feature is added, update the table above AND the Changelog below before finishing the task.
 
@@ -179,3 +184,4 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | v3.1 | 2026-04-03 | Code quality: extracted 26+ large functions (>60 lines) into focused helpers across dashboard.py, charts.py, daily_brief_tab.py, analysis_tab.py; added SECURITY.md, .env.example, secrets.toml.example; fixed 5-filter silent errors + JSON parse errors |
 | v3.2 | 2026-04-09 | XAR (SPDR Aerospace & Defense ETF) added as Security & Stability sector benchmark; per-layer alpha (XAR for defense, SPY for others); Finviz-style portfolio heatmap in overview + analysts tabs; conviction scatter matrix; 📋 יומי merged into אנליסטים as sub-tab |
 | v3.3 | 2026-04-12 | ⏰ תזמון קנייה tab: AI buy timing scoring (RSI+SMA+Bollinger+upside+VIX+Damodaran P/E) 0-100 score; Damodaran NYU sector benchmark fetcher (P/E, EV/EBITDA, beta); Claude Haiku verdict card with Buffett/Lynch + Damodaran + Breitstein frameworks; fixed JSON fence parsing + EPS trend fallback |
+| v3.4 | 2026-04-17 | ORB intraday chart (Python/Plotly, yfinance 5-min data, 5-condition signal, VWAP, episode state machine); buy price field in add/edit lot forms with auto-fill; Today's Session AI briefing (all-tickers Claude Haiku, priority table); 📈 יומן עסקאות sub-tab (retroactive P&L from portfolio lots + optional broker CSV, 6 analysis sections + pattern detection); 📏 Trailing Stop backtester in buy timing tab (n-bar trailing, MA cross entry, color-coded stop line); fixed session analysis max_tokens truncation |

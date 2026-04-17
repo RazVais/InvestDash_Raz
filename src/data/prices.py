@@ -259,6 +259,68 @@ def get_stock_data(tickers, trading_day):
     return result
 
 
+# ── Intraday data fetcher (ORB chart) ─────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def get_intraday_data(ticker, interval="5m"):
+    """
+    Fetch today's intraday OHLCV for a US-listed ticker.
+    Index is converted to America/New_York timezone.
+    TTL=300s (5 min) so the ORB chart refreshes frequently during market hours.
+    Returns a DataFrame or None on failure.
+    """
+    _log.info("get_intraday_data", extra={"ticker": ticker, "interval": interval})
+    try:
+        df = yf.Ticker(ticker).history(period="1d", interval=interval, prepost=False)
+        if df is None or df.empty:
+            return None
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        df.index = df.index.tz_convert("America/New_York")
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        return df if not df.empty else None
+    except Exception:
+        _log.warning("get_intraday_data failed", exc_info=True,
+                     extra={"ticker": ticker, "interval": interval})
+        return None
+
+
+# ── Auto-price helper (for form save) ─────────────────────────────────────────
+
+def get_current_price_or_daily_avg(ticker, buy_date, prices_dict):
+    """
+    Return the best available price for a given buy_date without extra prompts:
+    - Today + ticker in prices_dict → (High+Low)/2 of today if available, else current price
+    - Any date → get_buy_price() historical close from Yahoo Finance
+    Returns None if all sources fail.
+    """
+    from datetime import date as _date
+    today = _date.today()
+    try:
+        bd = buy_date if isinstance(buy_date, _date) else pd.Timestamp(str(buy_date)).date()
+    except Exception:
+        bd = today
+
+    if bd == today and prices_dict and ticker in (prices_dict or {}):
+        p = prices_dict.get(ticker) or {}
+        ohlcv = p.get("ohlcv")
+        if ohlcv is not None and not ohlcv.empty:
+            try:
+                mask = ohlcv.index.normalize() == pd.Timestamp(today)
+                today_rows = ohlcv[mask]
+                if not today_rows.empty:
+                    h = float(today_rows["High"].iloc[-1])
+                    l = float(today_rows["Low"].iloc[-1])
+                    return round((h + l) / 2, 4)
+            except Exception:
+                pass
+        if p.get("price"):
+            return round(float(p["price"]), 4)
+
+    # Historical or unknown ticker: fetch from Yahoo Finance
+    return get_buy_price(ticker, str(buy_date))
+
+
 # ── Buy-price lookup ───────────────────────────────────────────────────────────
 
 def lookup_buy_price(ticker, buy_date, prices_dict):

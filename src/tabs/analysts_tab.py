@@ -1,7 +1,5 @@
 """Analysts tab — daily analysis (merged יומי) + buy timing + consensus table + price targets + upgrades."""
 
-import math
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -14,7 +12,7 @@ from src.portfolio import all_tickers
 from src.tabs.analysis_tab import _safe_parse_json
 from src.tabs.daily_brief_tab import render_daily_brief
 from src.tabs.red_flags import get_all_flag_statuses
-from src.ui_helpers import color_legend, portfolio_treemap, section_title, term_glossary
+from src.ui_helpers import color_legend, section_title, term_glossary
 
 
 def render_analysts(portfolio, data, td_str: str = "", claude_api_key: str = ""):
@@ -30,6 +28,8 @@ def render_analysts(portfolio, data, td_str: str = "", claude_api_key: str = "")
 
     with tab_daily:
         _render_daily_analysis(portfolio, prices, consensus, targets)
+        st.divider()
+        _render_session_analysis(portfolio, data, td_str, claude_api_key)
         st.divider()
         render_daily_brief(portfolio, data, td_str, claude_api_key)
 
@@ -47,77 +47,11 @@ def render_analysts(portfolio, data, td_str: str = "", claude_api_key: str = "")
 # ── Daily Analysis ────────────────────────────────────────────────────────────
 
 def _render_daily_analysis(portfolio, prices, consensus, targets):
-    """Finviz-inspired daily dashboard: market pulse + heatmap + conviction scatter."""
-    section_title("ניתוח יומי", "מצב התיק היום — מוסיפים, מפסידים, עוצמת אנליסטים ומפת חום")
+    """Daily dashboard: market pulse KPIs + per-ticker brief."""
+    section_title("ניתוח יומי", "מצב התיק היום — מוסיפים, מפסידים, סיכום אנליסטים")
     tickers = sorted(all_tickers(portfolio))
 
     _render_market_pulse(tickers, prices, consensus, targets)
-    st.divider()
-
-    # ── Heatmap row ───────────────────────────────────────────────
-    col_heat, col_legend = st.columns([6, 1])
-    with col_heat:
-        st.markdown(
-            f'<div dir="rtl" style="font-size:13px;font-weight:600;color:{COLOR["primary"]};'
-            f'margin-bottom:4px">📊 מפת חום תיק</div>'
-            f'<div dir="rtl" style="font-size:10px;color:{COLOR["text_dim"]};margin-bottom:6px">'
-            f'גודל = שווי | צבע = שינוי יומי % | 👁 = ווצ\'ליסט</div>',
-            unsafe_allow_html=True,
-        )
-        portfolio_treemap(portfolio, prices, height=260)
-    with col_legend:
-        scale = [("#1b5e20","+3%+"),("#388e3c","+0.5%"),("#2d3748","  0%"),
-                 ("#c62828","−0.5%"),("#7f0000","−3%−")]
-        items = "".join(
-            f'<div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">'
-            f'<div style="width:12px;height:12px;border-radius:2px;background:{c}"></div>'
-            f'<span style="font-size:9px;color:#666">{lbl}</span></div>'
-            for c, lbl in scale
-        )
-        st.markdown(f'<div style="padding-top:36px">{items}</div>', unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Conviction scatter — full width, centred ──────────────────
-    st.markdown(
-        f'<div dir="rtl" style="font-size:13px;font-weight:600;color:{COLOR["primary"]};'
-        f'margin-bottom:2px">🎯 מטריצת עוצמת אנליסטים</div>'
-        f'<div dir="rtl" style="font-size:10px;color:{COLOR["text_dim"]};margin-bottom:10px">'
-        f'ציר X = אפסייד לפי יעד אנליסטים&nbsp;|&nbsp;'
-        f'ציר Y = % אנליסטים עם המלצת קנייה&nbsp;|&nbsp;'
-        f'גודל נקודה = מספר אנליסטים&nbsp;|&nbsp;'
-        f'צבע = שינוי יומי %</div>',
-        unsafe_allow_html=True,
-    )
-    _render_conviction_scatter(tickers, prices, consensus, targets)
-
-    # Quadrant explanation cards below the chart
-    q_cards = [
-        ("#4CAF5022", "#4CAF50", "🟢 הזדמנות — ימין עליון",
-         "אפסייד גבוה + רוב האנליסטים ממליצים קנייה. "
-         "המניה נסחרת מתחת ליעד ויש קונצנזוס חיובי — אזור המפגש האידיאלי."),
-        ("#FF980022", "#FF9800", "🟡 פוטנציאל נסתר — ימין תחתון",
-         "אפסייד גבוה אך האנליסטים זהירים. ייתכן שהשוק ראה סיכון שהאנליסטים מתעלמים ממנו, "
-         "או הזדמנות קונטרריאנית."),
-        ("#F4433622", "#F44336", "🔴 מומחים קנו כבר — שמאל עליון",
-         "רוב האנליסטים אוהבים את המניה, אך המחיר כבר גבוה מהיעד. "
-         "הציפיות כבר מגולמות — סיכון ל-Priced In."),
-        ("#9E9E9E22", "#9E9E9E", "⚫ הימנע — שמאל תחתון",
-         "אפסייד שלילי (מחיר מעל יעד) ומעט המלצות קנייה. "
-         "אין קטליזטור מחירי נראה לעין — עדיף לחכות לנתונים חדשים."),
-    ]
-    cols = st.columns(4)
-    for col, (bg, border, title, desc) in zip(cols, q_cards):
-        with col:
-            st.markdown(
-                f'<div dir="rtl" style="background:{bg};border:1px solid {border}33;'
-                f'border-radius:8px;padding:10px 12px;height:100%">'
-                f'<div style="font-size:11px;font-weight:700;color:{border};margin-bottom:5px">'
-                f'{title}</div>'
-                f'<div style="font-size:10px;color:#aaaaaa;line-height:1.55">{desc}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
 
 
 def _render_market_pulse(tickers, prices, consensus, targets):
@@ -184,133 +118,251 @@ def _render_market_pulse(tickers, prices, consensus, targets):
         st.markdown(_kpi("⚖️ בטא ממוצע תיק", v, sub), unsafe_allow_html=True)
 
 
-def _render_conviction_scatter(tickers, prices, consensus, targets):
+# ── Today's Session Analysis ──────────────────────────────────────────────────
+
+def _build_session_prompt(tickers, data):
     """
-    Finviz-style analyst conviction matrix.
-    X = analyst upside%, Y = % buy recommendations, dot size = sqrt(analyst count),
-    dot color = daily % change.  Top-right = strongest opportunity signal.
+    Build a per-ticker data block used as the Claude prompt body and cache key.
+    Uses only already-loaded data — zero extra network calls.
     """
-    xs, ys, sizes, colors, labels, hovers = [], [], [], [], [], []
+    prices    = data.get("prices") or {}
+    targets   = data.get("targets") or {}
+    consensus = data.get("consensus") or {}
+    news_dict = data.get("news") or {}
+    macro     = data.get("macro") or {}
+
+    vix      = macro.get("vix")
+    yield10y = macro.get("yield_10y")
+
+    lines = []
+
+    # Macro header
+    macro_line = "MACRO: "
+    if vix       is not None: macro_line += f"VIX={vix:.1f} "
+    if yield10y  is not None: macro_line += f"10Y_Yield={yield10y:.2f}% "
+    lines.append(macro_line.strip())
+    lines.append("")
 
     for t in tickers:
-        p     = prices.get(t)
-        con   = consensus.get(t, {})
-        tgt   = targets.get(t)
-        total = con.get("total", 0)
-        if not p or total < 2 or not tgt or not tgt.get("mean") or p.get("price", 0) <= 0:
-            continue
+        p   = prices.get(t) or {}
+        tgt = targets.get(t) or {}
+        con = consensus.get(t) or {}
 
-        upside   = (tgt["mean"] - p["price"]) / p["price"] * 100
-        buy_frac = (con.get("strong_buy", 0) + con.get("buy", 0)) / total * 100
-        change   = p.get("change", 0.0) or 0.0
+        price    = p.get("price") or 0.0
+        change   = p.get("change") or 0.0
+        high_52w = p.get("high_52w")
+        low_52w  = p.get("low_52w")
+        history  = p.get("history")
 
-        xs.append(upside)
-        ys.append(buy_frac)
-        # sqrt scaling: 5 analysts→10px, 25→20px, 76→28px — readable, never overwhelming
-        sizes.append(max(int(math.sqrt(total) * 3.5), 8))
-        colors.append(change)
-        labels.append(t)
-        hovers.append(
-            f"<b>{t}</b><br>"
-            f"אפסייד: {upside:+.1f}%<br>"
-            f"Buy: {buy_frac:.0f}% ({total} אנליסטים)<br>"
-            f"שינוי יומי: {change:+.2f}%"
+        parts = [f"TICKER: {t}"]
+        if price:
+            parts.append(f"price=${price:.2f} change={change:+.2f}%")
+        if high_52w and low_52w:
+            parts.append(f"52W_high=${high_52w:.2f} 52W_low=${low_52w:.2f}")
+
+        # RSI
+        try:
+            if history is not None and len(history) >= 15:
+                rsi_s = compute_rsi(history)
+                if not rsi_s.empty:
+                    parts.append(f"RSI={rsi_s.iloc[-1]:.1f}")
+        except Exception:
+            pass
+
+        # SMA50 / SMA200
+        try:
+            if history is not None and price > 0:
+                if len(history) >= 50:
+                    s50 = _sma(history, 50)
+                    if not s50.empty:
+                        v50 = float(s50.iloc[-1])
+                        rel = "above" if price >= v50 else "below"
+                        parts.append(f"SMA50=${v50:.2f}({rel})")
+                if len(history) >= 200:
+                    s200 = _sma(history, 200)
+                    if not s200.empty:
+                        v200 = float(s200.iloc[-1])
+                        rel = "above" if price >= v200 else "below"
+                        parts.append(f"SMA200=${v200:.2f}({rel})")
+        except Exception:
+            pass
+
+        # Bollinger
+        try:
+            if history is not None and len(history) >= 20 and price > 0:
+                _mid, upper_b, lower_b = bollinger(history, 20, 2)
+                if not _mid.empty:
+                    parts.append(
+                        f"BB_upper=${float(upper_b.iloc[-1]):.2f}"
+                        f" BB_lower=${float(lower_b.iloc[-1]):.2f}"
+                    )
+        except Exception:
+            pass
+
+        # Analyst upside + consensus
+        if tgt.get("mean") and price > 0:
+            upside = (tgt["mean"] - price) / price * 100
+            parts.append(f"analyst_target=${tgt['mean']:.2f}(upside={upside:+.1f}%)")
+        if con.get("label"):
+            parts.append(f"consensus={con['label']}")
+
+        # Latest 2 news headlines
+        headlines = (news_dict.get(t) or [])[:2]
+        for art in headlines:
+            title = (art.get("title") or "").strip()
+            if title:
+                parts.append(f"news: {title[:80]}")
+
+        lines.append(" | ".join(parts))
+
+    return "\n".join(lines)
+
+
+@st.cache_data(ttl=3600)
+def _run_session_analysis(
+    tickers_key: str, prompt_body: str, td_str: str, claude_api_key: str
+) -> dict:
+    """
+    Call Claude Haiku to generate a morning session briefing for all portfolio tickers.
+    Returns {"stocks": [...], "market_context": "..."} or {"_error": "..."}.
+    """
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=claude_api_key)
+        prompt = (
+            "You are a professional equity trader generating a morning session briefing "
+            "for a personal US stock portfolio.\n\n"
+            f"Date: {td_str}\n\n"
+            f"{prompt_body}\n\n"
+            "Analyze each ticker for TODAY's US equity session and provide:\n"
+            "1. catalyst: Key news or technical driver (or 'No catalyst' if none)\n"
+            "2. premarket: Price action tone — strength/weakness and why (use change% + momentum)\n"
+            "3. levels: Most relevant support and resistance as 'R:$X S:$Y' "
+            "(derive from SMA50, SMA200, Bollinger bands, 52W high/low, analyst target)\n"
+            "4. setup: Most likely intraday setup — choose from: "
+            "ORB breakout / VWAP bounce / momentum continuation / mean reversion / "
+            "pullback entry / wait for signal\n"
+            "5. priority: High (strong catalyst + clear setup) / "
+            "Medium (some signal, unclear edge) / Low (no edge today)\n\n"
+            "CRITICAL RULES:\n"
+            "- Return ONLY a raw JSON object. No code fences, no backticks, no markdown.\n"
+            "- Max 12 words per field. English only.\n"
+            "- Sort stocks array: High priority first, then Medium, then Low.\n"
+            "- market_context: 2-3 sentences on today's overall session tone given macro data "
+            "and portfolio composition.\n\n"
+            'JSON: {"stocks":[{"ticker":"...","priority":"High|Medium|Low","catalyst":"...",'
+            '"premarket":"...","levels":"R:$X S:$Y","setup":"..."},...], '
+            '"market_context":"..."}'
         )
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_text = msg.content[0].text
+        # Detect truncation: if stop_reason is max_tokens the JSON is incomplete
+        if getattr(msg, "stop_reason", None) == "max_tokens":
+            return {"_error": "תגובת AI קוצצה (max_tokens) — לחץ 'נסה שוב'"}
+        text   = _strip_fences(raw_text)
+        parsed = _safe_parse_json(text)
+        if parsed is None:
+            return {"_error": f"JSON לא תקין: {text[:120]}"}
+        if "stocks" not in parsed:
+            return {"_error": "Response missing 'stocks' key"}
+        return parsed
+    except Exception as exc:
+        return {"_error": str(exc)[:200]}
 
-    if not xs:
-        st.caption("אין נתוני אנליסטים זמינים.")
+
+def _render_session_analysis(portfolio, data, td_str, claude_api_key):
+    """Render Today's Session Analysis table in the ניתוח יומי sub-tab."""
+    section_title(
+        "📊 ניתוח סשן היום",
+        "סיכום מוקדם — קטליזטורים, מפתחות, סטאפ פוטנציאלי ועדיפות לפי איכות ההזדמנות",
+    )
+
+    if not claude_api_key:
+        st.caption("🤖 הוסף CLAUDE_API_KEY לקובץ secrets.toml לקבלת ניתוח סשן AI")
         return
 
-    x_pad = max((max(xs) - min(xs)) * 0.15, 8)
-    y_pad = 8
-    x_min, x_max = min(xs) - x_pad, max(xs) + x_pad
-    y_min, y_max = max(min(ys) - y_pad, -5), min(max(ys) + y_pad, 108)
+    tickers     = sorted(all_tickers(portfolio))
+    prompt_body = _build_session_prompt(tickers, data)
+    tickers_key = ",".join(tickers)
 
-    fig = go.Figure()
+    with st.spinner("🤖 AI מנתח את הסשן..."):
+        result = _run_session_analysis(tickers_key, prompt_body, td_str, claude_api_key)
 
-    # Subtle quadrant shading
-    for x0, x1, y0, y1, col in [
-        (x_min, 0,     50, y_max, "rgba(244,67,54,0.04)"),   # top-left: danger
-        (0,     x_max, 50, y_max, "rgba(76,175,80,0.06)"),   # top-right: opportunity
-        (x_min, 0,     y_min, 50, "rgba(244,67,54,0.02)"),   # bottom-left: avoid
-        (0,     x_max, y_min, 50, "rgba(255,152,0,0.04)"),   # bottom-right: wait
-    ]:
-        fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
-                      fillcolor=col, line_width=0, layer="below")
+    if "_error" in result:
+        st.warning(f"⚠️ {result['_error']}")
+        if st.button("🔄 נסה שוב", key="_retry_session"):
+            _run_session_analysis.clear()
+            st.rerun()
+        return
 
-    # Reference dividers
-    fig.add_hline(y=50, line_dash="dot", line_color="#2a2a2a", line_width=1)
-    fig.add_vline(x=0,  line_dash="dot", line_color="#2a2a2a", line_width=1)
+    stocks = result.get("stocks") or []
+    if not stocks:
+        st.caption("לא התקבלו נתוני סשן מה-AI.")
+        return
 
-    # Quadrant corner labels — midpoint of each quadrant
-    mid_x_right = (0 + x_max) / 2
-    mid_x_left  = (x_min + 0) / 2
-    mid_y_top   = (50 + y_max) / 2
-    mid_y_bot   = (y_min + 50) / 2
-    for qx, qy, qtxt, qcol in [
-        (mid_x_right, mid_y_top, "🟢 הזדמנות",  "rgba(76,175,80,0.35)"),
-        (mid_x_left,  mid_y_top, "🔴 מסוכן",    "rgba(244,67,54,0.35)"),
-        (mid_x_right, mid_y_bot, "🟡 פוטנציאל", "rgba(255,152,0,0.35)"),
-        (mid_x_left,  mid_y_bot, "⚫ הימנע",    "rgba(158,158,158,0.35)"),
-    ]:
-        fig.add_annotation(
-            x=qx, y=qy, text=qtxt, showarrow=False,
-            font={"size": 11, "color": qcol}, xanchor="center", yanchor="middle",
+    PRIORITY_COLOR = {
+        "High":   COLOR["positive"],
+        "Medium": COLOR["warning"],
+        "Low":    COLOR["text_dim"],
+    }
+    PRIORITY_HE = {"High": "גבוהה", "Medium": "בינונית", "Low": "נמוכה"}
+
+    _TH = (
+        f"padding:5px 10px;color:{COLOR['primary']};"
+        f"border-bottom:1px solid #333;font-size:11px;text-align:right"
+    )
+    _TD = "padding:6px 10px;font-size:11px;vertical-align:top"
+
+    rows = ""
+    for s in stocks:
+        ticker   = s.get("ticker", "")
+        priority = s.get("priority", "Low")
+        pc       = PRIORITY_COLOR.get(priority, COLOR["text_dim"])
+        ph       = PRIORITY_HE.get(priority, priority)
+        rows += (
+            f'<tr>'
+            f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{ticker}</td>'
+            f'<td style="{_TD};color:{pc};font-weight:700">{ph}</td>'
+            f'<td style="{_TD}">{s.get("catalyst", "—")}</td>'
+            f'<td style="{_TD}">{s.get("premarket", "—")}</td>'
+            f'<td style="{_TD};font-family:monospace;font-size:10px">{s.get("levels", "—")}</td>'
+            f'<td style="{_TD};color:#aaa">{s.get("setup", "—")}</td>'
+            f'</tr>'
         )
 
-    fig.add_trace(go.Scatter(
-        x=xs, y=ys,
-        mode="markers+text",
-        text=labels,
-        textposition="top center",
-        textfont={"size": 9, "color": "#e0e0e0", "family": "monospace"},
-        marker={
-            "size":  sizes,
-            "color": colors,
-            "colorscale": [
-                [0.0,  "#b71c1c"],
-                [0.35, "#e53935"],
-                [0.48, "#37474f"],
-                [0.52, "#37474f"],
-                [0.65, "#43a047"],
-                [1.0,  "#1b5e20"],
-            ],
-            "cmin": -2.5, "cmax": 2.5,
-            "showscale": True,
-            "colorbar": {
-                "title": {"text": "שינוי%", "font": {"size": 9}},
-                "thickness": 8, "len": 0.5,
-                "tickfont": {"size": 8},
-                "x": 1.01,
-            },
-            "line": {"color": "#1a1a1a", "width": 1},
-            "opacity": 0.9,
-        },
-        customdata=hovers,
-        hovertemplate="%{customdata}<extra></extra>",
-    ))
-
-    fig.update_layout(
-        height=480,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0a0e17",
-        font={"color": "#aaaaaa", "size": 10},
-        margin={"t": 8, "b": 36, "l": 44, "r": 28},
-        showlegend=False,
-        xaxis={
-            "title": {"text": "אפסייד אנליסטים %", "font": {"size": 10}},
-            "gridcolor": "#161b22", "zeroline": False,
-            "ticksuffix": "%", "range": [x_min, x_max],
-            "tickfont": {"size": 9},
-        },
-        yaxis={
-            "title": {"text": "% המלצות Buy", "font": {"size": 10}},
-            "gridcolor": "#161b22", "zeroline": False,
-            "ticksuffix": "%", "range": [y_min, y_max],
-            "tickfont": {"size": 9},
-        },
+    html = (
+        f'<div dir="rtl" style="overflow-x:auto">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:11px">'
+        f'<thead><tr>'
+        f'<th style="{_TH}">Ticker</th>'
+        f'<th style="{_TH}">עדיפות</th>'
+        f'<th style="{_TH}">קטליזטור</th>'
+        f'<th style="{_TH}">תנועת מחיר</th>'
+        f'<th style="{_TH}">מפתחות (R/S)</th>'
+        f'<th style="{_TH}">סטאפ</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></div>'
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.markdown(html, unsafe_allow_html=True)
+
+    ctx = result.get("market_context", "")
+    if ctx:
+        st.markdown(
+            f'<div dir="rtl" style="margin-top:12px;padding:10px 14px;'
+            f'background:#0d1117;border-left:3px solid {COLOR["primary"]};'
+            f'border-radius:4px;font-size:12px;color:#ccc;line-height:1.7">'
+            f'<b style="color:{COLOR["primary"]}">🌍 הקשר שוק:</b> {ctx}</div>',
+            unsafe_allow_html=True,
+        )
+
+    color_legend([
+        (COLOR["positive"], "עדיפות גבוהה — קטליזטור חזק + סטאפ ברור"),
+        (COLOR["warning"],  "עדיפות בינונית — אות חלש או אי-ודאות"),
+        (COLOR["text_dim"], "עדיפות נמוכה — אין יתרון ברור להיום"),
+    ])
 
 
 # ── Buy Timing Tab ────────────────────────────────────────────────────────────
@@ -731,6 +783,389 @@ def _render_timing_ai_card(verdict_dict, ticker, data_str, td_str, claude_api_ke
     )
 
 
+# ── Trailing Stop Backtester ──────────────────────────────────────────────────
+
+def _compute_trailing_stop(
+    ohlcv: "pd.DataFrame",
+    n_bars: int = 2,
+    fast_ma: int = 20,
+    slow_ma: int = 50,
+) -> "pd.DataFrame":
+    """
+    Backtest a trailing stop strategy on 1-year daily OHLCV.
+
+    Entry:    fast_ma crosses above slow_ma.
+    Stop:     lowest Low of the previous n_bars at entry time.
+    Trailing: whenever current bar's High > max(High of previous n_bars),
+              raise stop to min(Low of previous n_bars) — never down.
+    Exit:     Close < current stop level.
+
+    Added columns (all prefixed with _ to mark as internal):
+      _fast_ma, _slow_ma  — moving average values
+      _stop               – stop level (None when not in trade)
+      _stop_color         – "red" (initial) | "green" (has trailed) | None
+      _entry, _exit       – bool flags
+    """
+    df = ohlcv[["Open", "High", "Low", "Close", "Volume"]].copy()
+    n  = len(df)
+
+    df["_fast_ma"] = df["Close"].rolling(fast_ma, min_periods=fast_ma).mean()
+    df["_slow_ma"] = df["Close"].rolling(slow_ma, min_periods=slow_ma).mean()
+
+    # Entry signal: fast MA crosses above slow MA on this bar
+    df["_ma_cross"] = (
+        (df["_fast_ma"] > df["_slow_ma"])
+        & (df["_fast_ma"].shift(1) <= df["_slow_ma"].shift(1))
+    )
+
+    # State machine — iterate bar by bar
+    stop_arr       = [None] * n
+    stop_color_arr = [None] * n
+    entry_arr      = [False] * n
+    exit_arr       = [False] * n
+
+    in_trade   = False
+    stop       = 0.0
+    stop_moved = False
+    entry_price = 0.0  # noqa: F841 — used for P&L in stats
+
+    # Start after enough bars for both MA and lookback
+    start_i = max(n_bars, slow_ma)
+
+    for i in range(start_i, n):
+        high_i  = float(df["High"].iat[i])
+        close_i = float(df["Close"].iat[i])
+        # Previous n_bars (exclusive of current bar)
+        prev   = df.iloc[i - n_bars: i]
+        n_high = float(prev["High"].max())
+        n_low  = float(prev["Low"].min())
+
+        if not in_trade:
+            if bool(df["_ma_cross"].iat[i]):
+                in_trade    = True
+                stop        = n_low          # initial stop = prev n-bar low
+                stop_moved  = False
+                entry_price = close_i
+                entry_arr[i] = True
+            # No stop plotted when flat
+        else:
+            # Trail up: new n-bar high → raise stop if n-bar low is higher
+            if high_i > n_high:
+                new_stop = n_low
+                if new_stop > stop:          # stop only moves UP
+                    stop       = new_stop
+                    stop_moved = True
+
+            stop_arr[i]       = stop
+            stop_color_arr[i] = "green" if stop_moved else "red"
+
+            # Exit: close falls below stop
+            if close_i < stop:
+                exit_arr[i] = True
+                in_trade    = False
+                stop_moved  = False
+
+    df["_stop"]       = stop_arr
+    df["_stop_color"] = stop_color_arr
+    df["_entry"]      = entry_arr
+    df["_exit"]       = exit_arr
+    return df
+
+
+def _trailing_stop_stats(df: "pd.DataFrame") -> dict:
+    """Compute completed trade P&L statistics from trailing stop simulation."""
+    entry_rows = df[df["_entry"] == True]
+    exit_rows  = df[df["_exit"]  == True]
+    entry_idx  = entry_rows.index.tolist()
+    exit_idx   = exit_rows.index.tolist()
+
+    pnl_pcts: list = []
+    for ei in exit_idx:
+        prior = [e for e in entry_idx if e < ei]
+        if not prior:
+            continue
+        ep = float(df.loc[prior[-1], "Close"])
+        xp = float(df.loc[ei, "Close"])
+        if ep > 0:
+            pnl_pcts.append((xp - ep) / ep * 100)
+
+    if not pnl_pcts:
+        return {
+            "n_trades": 0, "n_entries": len(entry_rows),
+            "win_rate": None, "avg_win": None, "avg_loss": None, "total_pnl_pct": None,
+        }
+
+    wins   = [p for p in pnl_pcts if p > 0]
+    losses = [p for p in pnl_pcts if p <= 0]
+    return {
+        "n_trades":      len(pnl_pcts),
+        "n_entries":     len(entry_rows),
+        "win_rate":      len(wins) / len(pnl_pcts),
+        "avg_win":       sum(wins)   / len(wins)   if wins   else None,
+        "avg_loss":      sum(losses) / len(losses) if losses else None,
+        "total_pnl_pct": sum(pnl_pcts),
+    }
+
+
+def _build_trailing_stop_figure(
+    df: "pd.DataFrame",
+    ticker: str,
+    n_bars: int,
+    fast_ma: int,
+    slow_ma: int,
+    show_stop: bool,
+) -> go.Figure:
+    """
+    Plotly candlestick chart with MA lines, color-coded trailing stop,
+    and entry (triangle-up) / exit (square) markers.
+    """
+    fig = go.Figure()
+
+    # Candlestick
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        name=ticker,
+        increasing_line_color="#26a69a",
+        decreasing_line_color="#ef5350",
+        showlegend=True,
+    ))
+
+    # Moving averages
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["_fast_ma"],
+        mode="lines", name=f"SMA {fast_ma}",
+        line={"color": "#00bcd4", "width": 1.5},
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["_slow_ma"],
+        mode="lines", name=f"SMA {slow_ma}",
+        line={"color": "#ff9800", "width": 1.5},
+    ))
+
+    if show_stop:
+        stop_s = df["_stop"].copy().astype(float)
+        colors = df["_stop_color"]
+
+        # Red dotted = initial stop (hasn't moved yet)
+        red = stop_s.copy()
+        red[colors != "red"] = None
+        fig.add_trace(go.Scatter(
+            x=df.index, y=red,
+            mode="lines", name="Stop ראשוני",
+            line={"color": "#F44336", "width": 2, "dash": "dot"},
+            connectgaps=False,
+        ))
+
+        # Green solid = trailing stop (moved up at least once)
+        green = stop_s.copy()
+        green[colors != "green"] = None
+        fig.add_trace(go.Scatter(
+            x=df.index, y=green,
+            mode="lines", name="Trailing Stop",
+            line={"color": "#4CAF50", "width": 2},
+            connectgaps=False,
+        ))
+
+    # Entry markers — green triangle-up, slightly below close
+    entries = df[df["_entry"] == True]
+    if not entries.empty:
+        fig.add_trace(go.Scatter(
+            x=entries.index,
+            y=(entries["Close"] * 0.997),
+            mode="markers", name="כניסה",
+            marker={
+                "symbol": "triangle-up",
+                "size":   13,
+                "color":  "#4CAF50",
+                "line":   {"color": "#ffffff", "width": 1},
+            },
+        ))
+
+    # Exit markers — red square, slightly above close
+    exits = df[df["_exit"] == True]
+    if not exits.empty:
+        fig.add_trace(go.Scatter(
+            x=exits.index,
+            y=(exits["Close"] * 1.003),
+            mode="markers", name="יציאה",
+            marker={
+                "symbol": "square",
+                "size":   11,
+                "color":  "#F44336",
+                "line":   {"color": "#ffffff", "width": 1},
+            },
+        ))
+
+    day_str = df.index[-1].strftime("%d/%m/%Y") if not df.empty else ""
+    fig.update_layout(
+        height=450,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#111111",
+        font={"color": "#ffffff", "size": 11},
+        title={
+            "text": (
+                f"{ticker} — {n_bars}-Bar Trailing Stop | "
+                f"Entry: SMA{fast_ma} × SMA{slow_ma} | עד {day_str}"
+            ),
+            "font": {"color": COLOR["primary"], "size": 13},
+            "x": 0,
+        },
+        xaxis_rangeslider_visible=False,
+        legend={"orientation": "h", "y": 1.06, "font": {"size": 10}},
+        margin={"t": 55, "b": 20, "l": 20, "r": 20},
+        hovermode="x unified",
+    )
+    fig.update_xaxes(gridcolor="#222", showgrid=True)
+    fig.update_yaxes(gridcolor="#222", showgrid=True, tickprefix="$")
+    return fig
+
+
+def _render_ts_stats(stats: dict) -> None:
+    """5-KPI strip showing trailing stop backtest results."""
+    def _mini(label: str, val: str, color: str) -> str:
+        return (
+            f'<div style="background:#1a1f2e;border:1px solid #1f2937;border-radius:6px;'
+            f'padding:8px 12px;text-align:center">'
+            f'<div style="font-size:10px;color:{COLOR["text_dim"]};margin-bottom:2px">{label}</div>'
+            f'<div style="font-size:16px;font-weight:700;color:{color}">{val}</div>'
+            f'</div>'
+        )
+
+    n  = stats.get("n_trades", 0)
+    wr = stats.get("win_rate")
+    aw = stats.get("avg_win")
+    al = stats.get("avg_loss")
+    tp = stats.get("total_pnl_pct")
+
+    wr_c   = (COLOR["positive"] if (wr or 0) >= 0.5
+              else COLOR["warning"] if (wr or 0) >= 0.35
+              else COLOR["negative"])
+    tp_c   = COLOR["positive"] if (tp or 0) > 0 else COLOR["negative"]
+
+    cards = [
+        ("עסקאות שנסגרו", str(n) if n else "0",                       COLOR["primary"]),
+        ("שיעור הצלחה",   f"{wr*100:.1f}%" if wr is not None else "—", wr_c),
+        ("רווח ממוצע",    f"+{aw:.1f}%" if aw is not None else "—",    COLOR["positive"]),
+        ("הפסד ממוצע",    f"{al:.1f}%" if al is not None else "—",     COLOR["negative"]),
+        ('סה"כ P&L',      f"{tp:+.1f}%" if tp is not None else "—",    tp_c),
+    ]
+    cols = st.columns(5)
+    for col, (lbl, val, c) in zip(cols, cards):
+        with col:
+            st.markdown(_mini(lbl, val, c), unsafe_allow_html=True)
+
+    if n == 0:
+        ne = stats.get("n_entries", 0)
+        msg = (
+            "לא נסגרו עסקאות בתקופה זו — אין מספיק חציות MA ב-1 שנה."
+            if ne == 0
+            else f"נפתחו {ne} עסקאות אך לא נסגרו (עדיין פתוחות בסוף התקופה)."
+        )
+        st.caption(msg)
+
+
+def _render_trailing_stop_section(tickers: list, prices: dict) -> None:
+    """
+    Trailing stop backtester section — rendered at the bottom of the buy timing tab.
+    User picks a ticker + configures parameters; chart + stats update instantly.
+    """
+    st.divider()
+    section_title(
+        "📏 Trailing Stop — בקרת סיכון דינמית",
+        "בדיקה רטרואקטיבית (1 שנה) — כניסה על חצייה MA, יציאה על סיחרור n-bar",
+    )
+
+    with st.expander("📖 איך זה עובד?", expanded=False):
+        st.markdown(
+            '<div dir="rtl" style="font-size:11px;color:#aaa;line-height:1.9">'
+            '<b style="color:#00cf8d">כניסה:</b> MA המהיר חוצה מעל MA האיטי — אות מומנטום קלאסי.<br>'
+            '<b style="color:#00cf8d">Stop ראשוני:</b> הנמוך ביותר של N הנרות האחרונים בעת הכניסה — '
+            'קו הגנה ראשוני (מנוקד אדום).<br>'
+            '<b style="color:#00cf8d">Trailing:</b> בכל פעם שהמחיר שובר שיא חדש של N נרות, '
+            'ה-Stop מוזז למעלה לנמוך החדש של N נרות — '
+            'מגן על רווחים צבורים, אף פעם לא יורד (ירוק רציף).<br>'
+            '<b style="color:#00cf8d">יציאה:</b> כאשר סגירה מתחת ל-Stop הנוכחי — '
+            'מסומן בריבוע אדום על הגרף.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Controls ─────────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
+    with c1:
+        sel = st.selectbox(
+            "סימול",
+            tickers,
+            key="ts_ticker",
+            format_func=lambda t: f"{t} — {TICKER_NAMES.get(t, t)}",
+        )
+    with c2:
+        n_bars = st.slider("Lookback (bars)", min_value=1, max_value=10,
+                           value=2, key="ts_nbars",
+                           help="מספר הנרות לחישוב High/Low לצורך הזזת ה-Stop")
+    with c3:
+        fast_ma = st.slider("MA מהיר", min_value=5, max_value=100,
+                            value=20, key="ts_fast",
+                            help="MA הקצר — סיגנל כניסה מהיר יותר, יותר עסקאות")
+    with c4:
+        slow_ma = st.slider("MA איטי", min_value=20, max_value=200,
+                            value=50, key="ts_slow",
+                            help="MA הארוך — פילטר מגמה")
+    with c5:
+        st.markdown('<div style="margin-top:28px"></div>', unsafe_allow_html=True)
+        show_stop = st.checkbox("הצג Stop Line", value=True, key="ts_show_stop")
+
+    if fast_ma >= slow_ma:
+        st.warning("⚠️ MA מהיר חייב להיות קטן מ-MA האיטי.")
+        return
+
+    # ── Fetch OHLCV ──────────────────────────────────────────────────────────
+    p     = prices.get(sel) or {}
+    ohlcv = p.get("ohlcv")
+    if ohlcv is None or ohlcv.empty:
+        st.caption(f"אין נתוני OHLCV עבור {sel}.")
+        return
+    if len(ohlcv) < slow_ma + n_bars + 5:
+        st.caption(
+            f"אין מספיק ימי מסחר ({len(ohlcv)}) עבור MA{slow_ma}. "
+            f"הפחת את ה-MA האיטי."
+        )
+        return
+
+    # ── Compute & render ──────────────────────────────────────────────────────
+    try:
+        result_df = _compute_trailing_stop(ohlcv, n_bars=n_bars,
+                                           fast_ma=fast_ma, slow_ma=slow_ma)
+    except Exception as exc:
+        st.warning(f"שגיאה בחישוב: {exc}")
+        return
+
+    fig = _build_trailing_stop_figure(result_df, sel, n_bars, fast_ma, slow_ma, show_stop)
+    st.plotly_chart(fig, use_container_width=True)
+
+    stats = _trailing_stop_stats(result_df)
+    _render_ts_stats(stats)
+
+    color_legend([
+        ("#00bcd4", f"SMA {fast_ma} — ממוצע נע מהיר (כניסה)"),
+        ("#ff9800", f"SMA {slow_ma} — ממוצע נע איטי (מגמה)"),
+        ("#F44336", f"Stop ראשוני ({n_bars}-bar) — לא הוזזה עדיין"),
+        ("#4CAF50", f"Trailing Stop ({n_bars}-bar) — הוזזה למעלה"),
+        ("#4CAF50", "▲ כניסה — חצייה SMA"),
+        ("#F44336", "■ יציאה — סגירה מתחת ל-Stop"),
+    ])
+
+    term_glossary([
+        ("Trailing Stop",   "עצירת הפסד שזזה בכיוון אחד (למעלה). מגנה על רווחים צבורים."),
+        ("Lookback (bars)", f"N={n_bars} — מספר הנרות לאחור לחישוב Stop High/Low."),
+        ("MA Cross Entry",  f"כניסה: SMA{fast_ma} חוצה מעל SMA{slow_ma} = מומנטום חיובי."),
+        ("Stop ראשוני",     f"Low הנמוך ביותר של {n_bars} הנרות האחרונים בעת הכניסה."),
+        ("Trailing",        f"בכל פעם שנשבר שיא חדש של {n_bars} נרות, Stop מוזז ל-Low החדש."),
+        ("Win Rate",        "אחוז עסקאות רווחיות (סגירה מעל מחיר כניסה)."),
+    ])
+
+
 def _render_buy_timing_tab(portfolio, data, td_str, claude_api_key):
     """⏰ Buy Timing tab — score all tickers and show AI verdict cards."""
     section_title(
@@ -789,6 +1224,9 @@ def _render_buy_timing_tab(portfolio, data, td_str, claude_api_key):
                 _render_timing_ai_card(verdict, t, data_str, td_str, claude_api_key)
             else:
                 st.caption("🤖 הוסף CLAUDE_API_KEY לקובץ secrets.toml לקבלת ניתוח AI")
+
+    # ── Trailing stop backtester (below the ranked cards) ────────────────────
+    _render_trailing_stop_section(tickers, data.get("prices", {}))
 
 
 # ── Consensus Table ───────────────────────────────────────────────────────────

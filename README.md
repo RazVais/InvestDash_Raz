@@ -1,4 +1,4 @@
-# RazDashboard v3
+# RazDashboard v3.4
 
 Personal investment dashboard for the "Age of AI" portfolio. Tracks stocks across strategic layers with live data from Yahoo Finance, Finviz, and Finnhub. Built with Streamlit + Python, Hebrew RTL UI.
 
@@ -16,11 +16,11 @@ Live stats bar at the top of every page:
 
 ### Primary tabs (sidebar)
 - **סקירה (Overview)** — macro strip (VIX, 10Y yield, DXY), performance table with upside % and alpha vs VOO, portfolio P&L summary, sector allocation donut chart, 1-year correlation matrix heatmap
-- **תיק שלי (Portfolio)** — multi-lot model: track multiple buy events per ticker with individual dates, prices, and P&L; add/edit/remove individual lots or entire tickers
-- **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO
+- **תיק שלי (Portfolio)** — two sub-tabs: **📊 תיק שלי**: multi-lot model with individual dates, buy prices (auto-filled from live data if left blank), and P&L; add/edit/remove lots; **📈 יומן עסקאות**: retroactive trading performance analysis — auto-loads all portfolio lots from first buy date, optional broker CSV supplement for closed trades; 6 analysis sections: overall stats (win rate, expectancy, avg win/loss), by portfolio layer, by setup type, by time-of-day block (9:30–16:00), by day of week, and auto pattern detection with Hebrew recommendations
+- **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO; **ORB (Opening Range Breakout)** intraday chart: 5-condition signal (price break + volume surge + above VWAP + trade window + top-50% bar close), configurable interval (1m/2m/5m/15m) and volume multiplier, green background on active episodes
 - **אנליסטים (Analysts)** — three sub-tabs:
-  - **📋 ניתוח יומי** — Finviz-style heatmap, market pulse KPIs, analyst conviction scatter matrix, Claude Haiku per-ticker daily brief
-  - **⏰ תזמון קנייה** — AI buy timing: 0-100 signal score (RSI, SMA50/200, Bollinger, analyst upside, VIX, Damodaran sector P/E) + Claude Haiku Hebrew verdict card using Buffett/Lynch, Damodaran, and Breitstein frameworks; tickers ranked best opportunity first
+  - **📋 ניתוח יומי** — Finviz-style heatmap, market pulse KPIs, analyst conviction scatter matrix; **📊 Today's Session AI briefing**: single Claude Haiku call covers all tickers, returns priority-sorted table (High/Medium/Low) with catalyst, price assessment, support/resistance levels (R:$X S:$Y), and likely intraday setup; overall market context paragraph; Claude Haiku per-ticker daily brief
+  - **⏰ תזמון קנייה** — AI buy timing: 0-100 signal score (RSI, SMA50/200, Bollinger, analyst upside, VIX, Damodaran sector P/E) + Claude Haiku Hebrew verdict card using Buffett/Lynch, Damodaran, and Breitstein frameworks; tickers ranked best opportunity first; **📏 Trailing Stop backtester**: n-bar trailing stop on 1yr daily data, MA-cross entry, color-coded stop line (red=initial/green=trailing), entry/exit markers, configurable lookback + MA periods, win rate + P&L stats
   - **👥 קונצנזוס ואנליסטים** — consensus table with mini distribution bar, price target range chart with error bars, recent upgrades/downgrades with major firm highlighting
 - **פונדמנטלס (Fundamentals)** — P/E, Fwd P/E, EPS, ROE, ROA, P/B, P/S, Debt/Equity, Market Cap, Short Float, Institutional Ownership, Sector, Industry via Finviz; next earnings countdown with urgency colors; dividend yield; EPS trend on-demand
 

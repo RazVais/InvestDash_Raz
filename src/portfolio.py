@@ -86,30 +86,38 @@ def get_layer_for_ticker(portfolio, ticker):
 
 
 # ── Mutations ─────────────────────────────────────────────────────────────────
-def add_lot(portfolio, layer, ticker, shares, buy_date):
+def add_lot(portfolio, layer, ticker, shares, buy_date, buy_price=None):
     """Add a new buy lot. Creates layer if it doesn't exist."""
     ticker = ticker.upper().strip()
-    _log.info("add_lot", extra={"ticker": ticker, "layer": layer, "shares": shares, "buy_date": str(buy_date)})
+    _log.info("add_lot", extra={"ticker": ticker, "layer": layer, "shares": shares,
+                                "buy_date": str(buy_date), "buy_price": buy_price})
     if layer not in portfolio["layers"]:
         portfolio["layers"][layer] = []
-    portfolio["layers"][layer].append({
+    lot = {
         "ticker":   ticker,
         "shares":   float(shares),
         "buy_date": str(buy_date),
-    })
+    }
+    if buy_price is not None and float(buy_price) > 0:
+        lot["buy_price"] = round(float(buy_price), 4)
+    portfolio["layers"][layer].append(lot)
     save_portfolio(portfolio)
     return portfolio
 
 
-def update_lot(portfolio, layer, ticker, old_date, new_shares, new_date):
+def update_lot(portfolio, layer, ticker, old_date, new_shares, new_date, buy_price=None):
     """Replace an existing lot identified by (ticker, old_date) in layer."""
     ticker = ticker.upper().strip()
-    _log.info("update_lot", extra={"ticker": ticker, "layer": layer, "old_date": str(old_date), "new_shares": new_shares, "new_date": str(new_date)})
+    _log.info("update_lot", extra={"ticker": ticker, "layer": layer, "old_date": str(old_date),
+                                   "new_shares": new_shares, "new_date": str(new_date),
+                                   "buy_price": buy_price})
     lots = portfolio["layers"].get(layer, [])
     for lot in lots:
         if lot["ticker"] == ticker and lot["buy_date"] == str(old_date):
             lot["shares"]   = float(new_shares)
             lot["buy_date"] = str(new_date)
+            if buy_price is not None and float(buy_price) > 0:
+                lot["buy_price"] = round(float(buy_price), 4)
             break
     save_portfolio(portfolio)
     return portfolio
