@@ -78,13 +78,13 @@ RazDashboard/
 
 | Layer | Tickers |
 |---|---|
-| Core (50%) | VOO |
+| Core (50%) | VOO, XAR |
 | Physical Infrastructure | CCJ, FCX, ETN, VRT, EQX |
 | Compute & Platform | AMD, AMZN, GOOGL |
-| Security & Stability | XAR (benchmark ETF), CRWD, ESLT |
+| Security & Stability | CRWD, ESLT |
 | Healthcare & Pharma | TEVA |
 
-**XAR note**: SPDR S&P Aerospace & Defense ETF — tracked at 0 shares as the "ground zero" (sector benchmark) for Security & Stability, the same way VOO benchmarks the overall portfolio. Alpha for CRWD and ESLT is measured vs XAR. It is in `PORTFOLIO_ETFS` so fundamentals/EPS tabs skip it.
+**XAR note**: SPDR S&P Aerospace & Defense ETF — now tracked under Core (50%) alongside VOO. Still used as the sector benchmark for Security & Stability in `SECTOR_ETFS`, so alpha for CRWD and ESLT continues to be measured vs XAR. It is in `PORTFOLIO_ETFS` so fundamentals/EPS tabs skip it.
 
 **ESLT note**: Israeli stock listed on TASE. Minimal US analyst coverage expected — empty consensus, no upgrades/downgrades, may fail Finviz. This is normal, not a bug.
 
