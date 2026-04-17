@@ -10,6 +10,8 @@ Each ticker can have multiple lots (separate buy events):
 from datetime import date
 import json
 
+import requests
+
 from src.config import PORTFOLIO_FILE, TICKERS_BY_LAYER
 from src.logger import get_logger
 
@@ -28,32 +30,124 @@ def _build_defaults():
     return {"layers": layers, "settings": {"email_recipients": [], "auto_alert": False}}
 
 
-# ── Load / Save ───────────────────────────────────────────────────────────────
-def load_portfolio():
-    """Load portfolio.json; create from defaults if missing."""
-    _log.info("load_portfolio", extra={"file": str(PORTFOLIO_FILE)})
-    if PORTFOLIO_FILE.exists():
-        try:
-            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Remove empty layers
-            data["layers"] = {
-                k: v for k, v in data["layers"].items() if v
-            }
+# ── GitHub Gist storage (cloud persistence) ───────────────────────────────────
+def _get_gist_config():
+    """Return (gist_id, token) from st.secrets, or (None, None) if not configured."""
+    try:
+        import streamlit as st
+        gist_id = str(st.secrets.get("GIST_ID") or "").strip()
+        token   = str(st.secrets.get("GITHUB_TOKEN") or "").strip()
+        if gist_id and token:
+            return gist_id, token
+    except Exception:
+        pass
+    return None, None
+
+
+def _load_from_gist(gist_id, token):
+    """Fetch portfolio JSON from a GitHub Gist. Returns defaults on any error."""
+    try:
+        resp = requests.get(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        content = resp.json()["files"].get("portfolio.json", {}).get("content", "")
+        if content:
+            data = json.loads(content)
+            data["layers"] = {k: v for k, v in data["layers"].items() if v}
             return data
-        except Exception:
-            _log.error("Failed to load portfolio.json; falling back to defaults", exc_info=True, extra={"file": str(PORTFOLIO_FILE)})
+    except Exception:
+        _log.error("Failed to load portfolio from Gist", exc_info=True)
     return _build_defaults()
 
 
+def _save_to_gist(portfolio, gist_id, token):
+    """Write portfolio JSON to a GitHub Gist."""
+    try:
+        requests.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+            json={
+                "files": {
+                    "portfolio.json": {
+                        "content": json.dumps(portfolio, indent=2, ensure_ascii=False)
+                    }
+                }
+            },
+            timeout=10,
+        )
+    except Exception:
+        _log.error("Failed to save portfolio to Gist", exc_info=True)
+
+
+# ── Load / Save ───────────────────────────────────────────────────────────────
+def load_portfolio():
+    """Load portfolio from Gist (cloud) or local file; cache in session state."""
+    # Session-state cache: avoid a Gist round-trip on every Streamlit rerun
+    try:
+        import streamlit as st
+        cached = st.session_state.get("_portfolio_cache")
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
+    gist_id, token = _get_gist_config()
+    if gist_id:
+        _log.info("load_portfolio from Gist", extra={"gist_id": gist_id[:8]})
+        data = _load_from_gist(gist_id, token)
+    elif PORTFOLIO_FILE.exists():
+        _log.info("load_portfolio from file", extra={"file": str(PORTFOLIO_FILE)})
+        try:
+            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["layers"] = {k: v for k, v in data["layers"].items() if v}
+        except Exception:
+            _log.error("Failed to load portfolio.json; falling back to defaults",
+                       exc_info=True, extra={"file": str(PORTFOLIO_FILE)})
+            data = _build_defaults()
+    else:
+        data = _build_defaults()
+
+    try:
+        import streamlit as st
+        st.session_state["_portfolio_cache"] = data
+    except Exception:
+        pass
+
+    return data
+
+
 def save_portfolio(portfolio):
-    _log.info("save_portfolio", extra={"file": str(PORTFOLIO_FILE)})
+    """Persist portfolio to Gist (if configured) and local file."""
+    # Update cache immediately so the next rerun returns the new state
+    try:
+        import streamlit as st
+        st.session_state["_portfolio_cache"] = portfolio
+    except Exception:
+        pass
+
+    gist_id, token = _get_gist_config()
+    if gist_id:
+        _log.info("save_portfolio to Gist", extra={"gist_id": gist_id[:8]})
+        _save_to_gist(portfolio, gist_id, token)
+
+    # Also write locally — no-op on Streamlit Cloud's ephemeral FS, useful locally
+    _log.info("save_portfolio to file", extra={"file": str(PORTFOLIO_FILE)})
     PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
             json.dump(portfolio, f, indent=2, ensure_ascii=False)
     except Exception:
-        _log.error("Failed to save portfolio.json", exc_info=True, extra={"file": str(PORTFOLIO_FILE)})
+        _log.warning("Local file write skipped (expected on Streamlit Cloud)")
 
 
 # ── Ticker helpers ────────────────────────────────────────────────────────────
