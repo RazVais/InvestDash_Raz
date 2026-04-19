@@ -1,5 +1,6 @@
 """Charts tab — 1-year candlestick with RSI, MAs, Bollinger, Volume, relative strength."""
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -248,6 +249,8 @@ def render_charts(portfolio, data):
 
     _render_relative_strength(sel, p, prices)
     _render_orb_chart(sel)
+    st.divider()
+    _render_monte_carlo_section(sel, prices, targets)
 
 
 # ── ORB: Opening Range Breakout (Python / Plotly) ─────────────────────────────
@@ -539,3 +542,221 @@ def _render_orb_chart(sel):
         ("אות חד-פעמי",
          "פעם אחת לכל פריצה. מתאפס אוטומטית כשהמחיר סוגר מתחת ל-OR High, ומאפשר כניסה חוזרת."),
     ])
+
+
+# ── Monte Carlo simulation ────────────────────────────────────────────────────
+
+def _run_mc(close_series, current_price, n_sims, n_days):
+    """GBM Monte Carlo simulation. Returns (n_sims, n_days+1) price-path array."""
+    log_ret = np.log(close_series / close_series.shift(1)).dropna()
+    mu      = log_ret.mean()
+    sigma   = log_ret.std()
+    Z       = np.random.standard_normal((n_sims, n_days))
+    paths   = np.empty((n_sims, n_days + 1))
+    paths[:, 0] = current_price
+    for t in range(1, n_days + 1):
+        paths[:, t] = paths[:, t - 1] * np.exp(
+            (mu - 0.5 * sigma ** 2) + sigma * Z[:, t - 1]
+        )
+    return paths
+
+
+def _build_mc_figure(close_series, paths, ticker, n_days,
+                     analyst_target=None, show_sample_paths=True):
+    """Plotly fan chart: historical close + percentile bands + optional sample paths."""
+    last_date    = close_series.index[-1]
+    future_dates = pd.bdate_range(
+        start=last_date + pd.Timedelta(days=1), periods=n_days
+    )
+
+    # Percentiles at each future step (columns 1..n_days)
+    pcts = {p: np.percentile(paths[:, 1:], p, axis=0) for p in [5, 25, 50, 75, 95]}
+
+    fig = go.Figure()
+
+    # Historical close (grey)
+    fig.add_trace(go.Scatter(
+        x=close_series.index, y=close_series,
+        name="היסטוריה",
+        line={"color": "#888888", "width": 1.5},
+        hovertemplate="%{y:.2f}<extra>היסטוריה</extra>",
+    ))
+
+    # Outer band: P5 (lower) → P95 (upper), fill="tonexty" fills P5→P95
+    fig.add_trace(go.Scatter(
+        x=future_dates, y=pcts[5],
+        name="P5 (גרוע)",
+        line={"color": "#4CAF50", "width": 0.5, "dash": "dot"},
+        hovertemplate="%{y:.2f}<extra>5%</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=future_dates, y=pcts[95],
+        name="P95 (מיטבי)",
+        line={"color": "#4CAF50", "width": 0.5, "dash": "dot"},
+        fill="tonexty",
+        fillcolor="rgba(76,175,80,0.10)",
+        hovertemplate="%{y:.2f}<extra>95%</extra>",
+    ))
+
+    # Inner band: P25 → P75
+    fig.add_trace(go.Scatter(
+        x=future_dates, y=pcts[25],
+        name="P25",
+        line={"color": "#4CAF50", "width": 0.8},
+        hovertemplate="%{y:.2f}<extra>25%</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=future_dates, y=pcts[75],
+        name="P75",
+        line={"color": "#4CAF50", "width": 0.8},
+        fill="tonexty",
+        fillcolor="rgba(76,175,80,0.22)",
+        hovertemplate="%{y:.2f}<extra>75%</extra>",
+    ))
+
+    # Median (P50)
+    fig.add_trace(go.Scatter(
+        x=future_dates, y=pcts[50],
+        name="חציון (P50)",
+        line={"color": "#00cf8d", "width": 2, "dash": "dash"},
+        hovertemplate="%{y:.2f}<extra>חציון</extra>",
+    ))
+
+    # Sample paths (thin, semi-transparent)
+    if show_sample_paths:
+        sample_idx = np.random.choice(
+            paths.shape[0], size=min(8, paths.shape[0]), replace=False
+        )
+        for i in sample_idx:
+            fig.add_trace(go.Scatter(
+                x=future_dates, y=paths[i, 1:],
+                mode="lines",
+                line={"color": "rgba(200,200,200,0.18)", "width": 0.8},
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+
+    # Analyst target
+    if analyst_target:
+        fig.add_hline(
+            y=analyst_target,
+            line_color="#FF9800", line_dash="dot", line_width=1.5,
+            annotation_text=f"יעד אנליסטים ${analyst_target:.0f}",
+            annotation_font_color="#FF9800",
+            annotation_position="top right",
+        )
+
+    # Today divider
+    fig.add_vline(
+        x=last_date.isoformat(),
+        line_dash="dash", line_color="#555555", line_width=1.5,
+        annotation_text="היום",
+        annotation_font_color="#888888",
+        annotation_position="top right",
+    )
+
+    name_str = TICKER_NAMES.get(ticker, ticker)
+    fig.update_layout(
+        title={
+            "text": f"מונטה קארלו — {ticker} ({name_str})",
+            "font": {"color": COLOR["text_dim"], "size": 13},
+            "x": 0.5,
+        },
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#0e1117",
+        font={"color": "#ffffff", "size": 10},
+        height=420,
+        margin={"t": 40, "b": 20, "l": 10, "r": 80},
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.03, "x": 0},
+    )
+    fig.update_xaxes(gridcolor="#2a2a2a", zeroline=False)
+    fig.update_yaxes(gridcolor="#2a2a2a", zeroline=False, tickprefix="$")
+    return fig
+
+
+def _render_mc_stats(paths, current_price):
+    """5-card KPI strip: profit probability, median, P5, P95, VaR."""
+    final    = paths[:, -1]
+    p_profit = float((final > current_price).mean() * 100)
+    median   = float(np.median(final))
+    p5       = float(np.percentile(final, 5))
+    p95      = float(np.percentile(final, 95))
+    var5     = (p5 - current_price) / current_price * 100
+
+    def _card(col, label, value, color="#ffffff", sub=""):
+        col.markdown(
+            f"""<div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;
+                padding:12px 10px;text-align:center">
+              <div style="font-size:11px;color:#888;margin-bottom:4px">{label}</div>
+              <div style="font-size:20px;font-weight:700;color:{color}">{value}</div>
+              {"<div style='font-size:10px;color:#666;margin-top:2px'>"+sub+"</div>" if sub else ""}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+    profit_color = (
+        COLOR["positive"] if p_profit >= 55
+        else COLOR["negative"] if p_profit <= 45
+        else "#ffffff"
+    )
+
+    cols = st.columns(5)
+    _card(cols[0], "P(רווח)", f"{p_profit:.0f}%", profit_color,
+          sub="סימולציות שמסתיימות ברווח")
+    _card(cols[1], "מחיר חציוני", f"${median:.2f}")
+    _card(cols[2], "גרוע (P5)", f"${p5:.2f}", COLOR["negative"])
+    _card(cols[3], "מיטבי (P95)", f"${p95:.2f}", COLOR["positive"])
+    _card(cols[4], "VaR (5%)", f"{var5:.1f}%", COLOR["negative"] if var5 < 0 else COLOR["positive"],
+          sub="הפסד מקסימלי ב-95% מהמקרים")
+
+
+def _render_monte_carlo_section(ticker, prices, targets):
+    """Monte Carlo price simulation section at the bottom of the charts tab."""
+    section_title(
+        "סימולציית מונטה קארלו",
+        "חיזוי מסלולי מחיר לפי תנודתיות היסטורית — מודל Geometric Brownian Motion",
+    )
+
+    ohlcv     = (prices.get(ticker) or {}).get("ohlcv")
+    cur_price = (prices.get(ticker) or {}).get("price")
+    if ohlcv is None or cur_price is None or ohlcv.empty:
+        st.info("אין נתוני OHLCV לסימולציה.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        horizon = st.selectbox(
+            "אופק (ימי מסחר)", [30, 60, 90, 180, 252], index=2, key="mc_horizon"
+        )
+    with c2:
+        n_sims = st.selectbox(
+            "סימולציות", [500, 1000, 5000], index=1, key="mc_sims"
+        )
+    with c3:
+        show_paths = st.toggle("הצג מסלולים", value=True, key="mc_show_paths")
+
+    close  = ohlcv["Close"].dropna()
+    target = (targets.get(ticker) or {}).get("mean")
+
+    paths = _run_mc(close, float(cur_price), n_sims=int(n_sims), n_days=int(horizon))
+    fig   = _build_mc_figure(
+        close, paths, ticker, int(horizon),
+        analyst_target=target, show_sample_paths=show_paths,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    _render_mc_stats(paths, float(cur_price))
+
+    term_glossary([
+        ("Geometric Brownian Motion (GBM)",
+         "מודל מתמטי לחיזוי מחירי מניות. מניח שינויים אקראיים לוגריתמיים עם סטיית תקן קבועה. "
+         "הנחת יסוד: תנודתיות עבר מייצגת את תנודתיות העתיד."),
+        ("VaR — Value at Risk (5%)",
+         "ההפסד המקסימלי ברמת ביטחון 95% — רק 5% מהסימולציות מסתיימות בהפסד גדול יותר."),
+        ("P(רווח)",
+         "אחוז הסימולציות שמסתיימות במחיר גבוה מהמחיר הנוכחי — הסתברות גולמית לרווח לפי המודל."),
+        ("P5 / P95",
+         "אחוזון 5 ו-95 — טווח ה-90% המרכזי של כל התוצאות האפשריות."),
+        ("חציון (P50)",
+         "מחצית הסימולציות מסתיימות מעל לערך זה ומחצית מתחתיו."),
+    ], label="📖 מקרא — מונטה קארלו")
