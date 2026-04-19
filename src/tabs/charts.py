@@ -685,12 +685,14 @@ def _build_mc_figure(close_series, paths, ticker, n_days,
 
 def _render_mc_stats(paths, current_price):
     """5-card KPI strip: profit probability, median, P5, P95, VaR."""
-    final    = paths[:, -1]
-    p_profit = float((final > current_price).mean() * 100)
-    median   = float(np.median(final))
-    p5       = float(np.percentile(final, 5))
-    p95      = float(np.percentile(final, 95))
-    var5     = (p5 - current_price) / current_price * 100
+    final      = paths[:, -1]
+    p_profit   = float((final > current_price).mean() * 100)
+    median     = float(np.median(final))
+    p5         = float(np.percentile(final, 5))
+    p95        = float(np.percentile(final, 95))
+    max_price  = float(np.max(final))
+    var5       = (p5 - current_price) / current_price * 100
+    max_profit = (max_price - current_price) / current_price * 100
 
     def _card(col, label, value, color="#ffffff", sub=""):
         sub_html = f"<div style='font-size:10px;color:#666;margin-top:2px'>{sub}</div>" if sub else ""
@@ -708,7 +710,7 @@ def _render_mc_stats(paths, current_price):
         else "#ffffff"
     )
 
-    cols = st.columns(5)
+    cols = st.columns(6)
     _card(cols[0], "P(רווח)", f"{p_profit:.0f}%", profit_color,
           sub="סימולציות שמסתיימות ברווח")
     _card(cols[1], "מחיר חציוני", f"${median:.2f}")
@@ -716,6 +718,8 @@ def _render_mc_stats(paths, current_price):
     _card(cols[3], "מיטבי (P95)", f"${p95:.2f}", COLOR["positive"])
     _card(cols[4], "VaR (5%)", f"{var5:.1f}%", COLOR["negative"] if var5 < 0 else COLOR["positive"],
           sub="הפסד מקסימלי ב-95% מהמקרים")
+    _card(cols[5], "רווח מקסימלי", f"+{max_profit:.1f}%", COLOR["positive"],
+          sub=f"${max_price:.2f} — הסימולציה האופטימית ביותר")
 
 
 def _render_monte_carlo_section(ticker, prices, targets):
