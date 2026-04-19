@@ -138,7 +138,8 @@ def _render_performance_table(portfolio, prices, targets, consensus):
 
     rows = []
     for t in all_tickers(portfolio):
-        layer = get_layer_for_ticker(portfolio, t) or "אחר"
+        layer    = get_layer_for_ticker(portfolio, t) or "אחר"
+        is_watch = all(lot.get("shares", 0) == 0 for _l, lot in lots_for_ticker(portfolio, t))
         p   = prices.get(t)
         tgt = targets.get(t)
         con = consensus.get(t, {})
@@ -172,14 +173,24 @@ def _render_performance_table(portfolio, prices, targets, consensus):
         lc    = COLOR["positive"] if "Buy" in label else (COLOR["negative"] if "Sell" in label else COLOR["neutral"])
         cons_str = f'<span style="color:{lc}">{label}</span>'
 
+        if is_watch:
+            row_bg      = "background:#12121e"
+            ticker_html = (
+                f'<span style="color:#888;font-weight:500">👁 {t}</span>'
+                f'<span style="font-size:9px;color:#555;margin-right:4px"> מעקב</span>'
+            )
+        else:
+            row_bg      = ""
+            ticker_html = f'<span style="color:{LAYER_COLORS.get(layer, COLOR["primary"])};font-weight:600">{t}</span>'
+
         rows.append(
-            f'<tr>'
-            f'<td style="padding:4px 8px;color:{LAYER_COLORS.get(layer, COLOR["primary"])};font-weight:600">{t}</td>'
+            f'<tr style="{row_bg}">'
+            f'<td style="padding:4px 8px">{ticker_html}</td>'
             f'<td style="padding:4px 8px;font-size:11px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t, t)}</td>'
             f'<td style="padding:4px 8px">{price_str}</td>'
             f'<td style="padding:4px 8px">{change_str}</td>'
             f'<td style="padding:4px 8px">{upside_str}</td>'
-            f'<td style="padding:4px 8px">{alpha_str}</td>'
+            f'<td style="padding:4px 8px">{"—" if is_watch else alpha_str}</td>'
             f'<td style="padding:4px 8px">{cons_str}</td>'
             f'</tr>'
         )
