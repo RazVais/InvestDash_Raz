@@ -693,13 +693,12 @@ def _render_mc_stats(paths, current_price):
     var5     = (p5 - current_price) / current_price * 100
 
     def _card(col, label, value, color="#ffffff", sub=""):
+        sub_html = f"<div style='font-size:10px;color:#666;margin-top:2px'>{sub}</div>" if sub else ""
         col.markdown(
-            f"""<div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;
-                padding:12px 10px;text-align:center">
-              <div style="font-size:11px;color:#888;margin-bottom:4px">{label}</div>
-              <div style="font-size:20px;font-weight:700;color:{color}">{value}</div>
-              {"<div style='font-size:10px;color:#666;margin-top:2px'>"+sub+"</div>" if sub else ""}
-            </div>""",
+            f'<div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px 10px;text-align:center">'
+            f'<div style="font-size:11px;color:#888;margin-bottom:4px">{label}</div>'
+            f'<div style="font-size:20px;font-weight:700;color:{color}">{value}</div>'
+            f'{sub_html}</div>',
             unsafe_allow_html=True,
         )
 
