@@ -196,6 +196,49 @@ def _render_pnl_table(portfolio, prices):
             unsafe_allow_html=True,
         )
 
+    # ── Watchlist (0-share tickers) ───────────────────────────────
+    watched = [
+        t for t in sorted(all_tickers(portfolio))
+        if all(lot.get("shares", 0) == 0 for _l, lot in lots_for_ticker(portfolio, t))
+    ]
+    if watched:
+        st.markdown(
+            '<div dir="rtl" style="margin-top:18px;margin-bottom:6px;'
+            f'font-size:12px;font-weight:700;color:{COLOR["text_dim"]}">📍 מעקב</div>',
+            unsafe_allow_html=True,
+        )
+        _WL_COL = ["14%", "30%", "18%", "38%"]
+        wl_colgroup = "".join(f'<col style="width:{w}">' for w in _WL_COL)
+        def _wl_table(rows_html):
+            return (
+                f'<div dir="rtl"><table style="width:100%;border-collapse:collapse;'
+                f'table-layout:fixed"><colgroup>{wl_colgroup}</colgroup>'
+                f'<tbody>{rows_html}</tbody></table></div>'
+            )
+        wl_rows = ""
+        for t in watched:
+            p = prices.get(t) or {}
+            cur = p.get("price")
+            chg = p.get("change")
+            cur_str = f"${cur:.2f}" if cur else "—"
+            if chg is not None:
+                chg_c   = COLOR["positive"] if chg >= 0 else COLOR["negative"]
+                chg_str = f'<span style="color:{chg_c}">{chg:+.2f}%</span>'
+            else:
+                chg_str = "—"
+            wl_rows += (
+                f'<tr style="background:#161620">'
+                f'<td style="{_TD};color:#aaaaaa;border-left:3px solid #444">{t}</td>'
+                f'<td style="{_TD};font-size:10px;color:{COLOR["text_dim"]}">'
+                f'{TICKER_NAMES.get(t, "")}</td>'
+                f'<td style="{_TD}">{cur_str}</td>'
+                f'<td style="{_TD}">{chg_str}</td>'
+                f'</tr>'
+            )
+        _, col_wl = st.columns([1, 24])
+        with col_wl:
+            st.markdown(_wl_table(wl_rows), unsafe_allow_html=True)
+
     color_legend([
         ("#4CAF50",  "רווח"),
         ("#F44336",  "הפסד"),
@@ -216,7 +259,7 @@ def _render_pnl_table(portfolio, prices):
 _NEW_TICKER_OPTION = "➕ טיקר חדש..."
 
 def _form_add_lot(portfolio, prices):
-    with st.expander("➕ הוסף קנייה"):
+    with st.expander("➕ הוסף נייר ערך"):
         existing       = sorted(all_tickers(portfolio))
         ticker_options = existing + [_NEW_TICKER_OPTION]
 
@@ -242,18 +285,29 @@ def _form_add_lot(portfolio, prices):
             unsafe_allow_html=True,
         )
 
-        shares      = st.number_input("כמות מניות", min_value=0.001, step=0.001, format="%.3f", key="add_shares")
-        bd          = st.date_input("תאריך קנייה", value=date.today(), key="add_date")
-        price_input = st.number_input(
-            "מחיר קנייה למניה ($)",
-            min_value=0.0, value=0.0, step=0.01, format="%.2f",
-            key="add_price",
-        )
-        st.caption("0 — מחיר יאותר אוטומטית: ממוצע יומי (High+Low)/2 בשעות מסחר, או מחיר סגירה היסטורי.")
+        watch_only = st.toggle("👁 מעקב בלבד (ללא קנייה)", value=False, key="add_watch_only")
 
-        if st.button("שמור קנייה", key="add_btn"):
+        if not watch_only:
+            shares      = st.number_input("כמות מניות", min_value=0.001, step=0.001, format="%.3f", key="add_shares")
+            bd          = st.date_input("תאריך קנייה", value=date.today(), key="add_date")
+            price_input = st.number_input(
+                "מחיר קנייה למניה ($)",
+                min_value=0.0, value=0.0, step=0.01, format="%.2f",
+                key="add_price",
+            )
+            st.caption("0 — מחיר יאותר אוטומטית: ממוצע יומי (High+Low)/2 בשעות מסחר, או מחיר סגירה היסטורי.")
+        else:
+            st.caption("הנייר יופיע בכל לשוניות הניתוח (גרפים, אנליסטים, פונדמנטלס) אך לא בטבלת הרווח/הפסד.")
+
+        btn_label = "הוסף למעקב" if watch_only else "שמור קנייה"
+        if st.button(btn_label, key="add_btn"):
             if not ticker:
                 st.error("הכנס סימול תקין.")
+            elif watch_only:
+                add_lot(portfolio, layer, ticker, 0, date.today(), buy_price=None)
+                st.cache_data.clear()
+                st.success(f"נוסף למעקב: {ticker} — שכבה: {layer}")
+                st.rerun()
             elif shares <= 0:
                 st.error("כמות חייבת להיות גדולה מ-0.")
             else:
