@@ -646,13 +646,21 @@ def _build_mc_figure(close_series, paths, ticker, n_days,
             annotation_position="top right",
         )
 
-    # Today divider
-    fig.add_vline(
-        x=last_date.isoformat(),
-        line_dash="dash", line_color="#555555", line_width=1.5,
-        annotation_text="היום",
-        annotation_font_color="#888888",
-        annotation_position="top right",
+    # Today divider — add_shape avoids plotly's _mean(str) crash on datetime axes
+    fig.add_shape(
+        type="line",
+        x0=last_date, x1=last_date,
+        y0=0, y1=1,
+        xref="x", yref="paper",
+        line={"color": "#555555", "width": 1.5, "dash": "dash"},
+    )
+    fig.add_annotation(
+        x=last_date, y=1, yref="paper",
+        text="היום",
+        showarrow=False,
+        font={"color": "#888888", "size": 10},
+        xanchor="right",
+        yanchor="top",
     )
 
     name_str = TICKER_NAMES.get(ticker, ticker)
