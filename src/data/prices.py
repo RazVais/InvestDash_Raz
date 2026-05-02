@@ -23,6 +23,7 @@ import requests as _req
 import streamlit as st
 import yfinance as yf
 
+from src.config import is_tase_numeric
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -166,10 +167,55 @@ def _ohlcv_for_ticker(ticker):
 # ── Per-ticker worker (runs in thread pool) ───────────────────────────────────
 
 
-def _process_one_ticker(t):
-    """Fetch OHLCV + beta/div_yield/div_rate for a single ticker. Thread-safe."""
+def _process_tase_ticker(t):
+    """Fetch OHLCV + metadata for a TASE numeric security via pymaya. Thread-safe."""
+    from src.data.tase import fetch_tase_current, fetch_tase_history
     try:
-        df, meta, source = _ohlcv_for_ticker(t)
+        current = fetch_tase_current(t)
+        if not current:
+            _log.warning("TASE current fetch failed", extra={"ticker": t})
+            return t, None, "no data"
+
+        _hist = fetch_tase_history(t)
+        ohlcv = _hist if _hist is not None else pd.DataFrame()
+
+        price = current["price"]
+        close = ohlcv["Close"] if not ohlcv.empty else pd.Series([price])
+
+        _log.info("Fetched TASE data", extra={
+            "ticker": t, "price": price, "rows": len(ohlcv),
+        })
+        return t, {
+            "price":     price,
+            "change":    current["change_pct"],
+            "beta":      None,
+            "div_yield": 0.0,
+            "div_rate":  0.0,
+            "ohlcv":     ohlcv,
+            "high_52w":  float(close.max()),
+            "low_52w":   float(close.min()),
+            "history":   close,
+            "currency":  "ILS",
+            "name":      current.get("name", ""),
+        }, ""
+    except Exception:
+        _log.error("TASE ticker processing error", exc_info=True, extra={"ticker": t})
+        return t, None, "error"
+
+
+def _process_one_ticker(t):
+    """Fetch OHLCV + beta/div_yield/div_rate for a single ticker. Thread-safe.
+
+    TASE numeric tickers (e.g. '1146356') are routed to _process_tase_ticker()
+    which uses pymaya to call api.tase.co.il directly.  Prices are in NIS;
+    the result dict carries currency='ILS' so display code shows ₪.
+    """
+    try:
+        if is_tase_numeric(t):
+            return _process_tase_ticker(t)
+
+        yf_sym = t
+        df, meta, source = _ohlcv_for_ticker(yf_sym)
         if df is None or df.empty:
             _log.warning("All price sources failed", extra={"ticker": t})
             return t, None, "no data"
@@ -183,14 +229,15 @@ def _process_one_ticker(t):
         price = float(close.iloc[-1])
         prev  = float(close.iloc[-2]) if len(close) > 1 else price
 
-        # Beta from yfinance .info (semaphore caps concurrent calls)
-        beta = 1.0
+        # Beta from yfinance .info (TASE tickers are handled separately)
+        beta = None
         with _YF_INFO_SEM:
             try:
-                info = yf.Ticker(t).info
+                info = yf.Ticker(yf_sym).info
                 beta = float(info.get("beta") or 1.0)
             except Exception:
                 _log.warning("ticker .info unavailable", extra={"ticker": t})
+                beta = 1.0
 
         # Dividend yield + annual rate — computed from v8 dividend events (zero extra requests)
         div_yield, div_rate = 0.0, 0.0
@@ -226,6 +273,7 @@ def _process_one_ticker(t):
             "high_52w":  float(close.max()),
             "low_52w":   float(close.min()),
             "history":   close,
+            "currency":  "USD",
         }, ""
     except Exception:
         _log.error("Ticker processing error", exc_info=True, extra={"ticker": t})
@@ -348,20 +396,22 @@ def get_buy_price(ticker, buy_date):
     Return closing price on or just after buy_date.
     Primary: Yahoo Finance v8 REST API.
     Fallback: yfinance Ticker.history() for specific range.
+    TASE numeric tickers (e.g. '1146356') automatically use the '.TA' suffix.
     """
     _log.info("get_buy_price", extra={"ticker": ticker, "buy_date": buy_date})
     try:
-        d   = pd.to_datetime(buy_date)
-        end = (d + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
-        start = d.strftime("%Y-%m-%d")
+        yf_sym = tase_yf_symbol(ticker) if is_tase_numeric(ticker) else ticker
+        d      = pd.to_datetime(buy_date)
+        end    = (d + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        start  = d.strftime("%Y-%m-%d")
 
         # Primary: Yahoo v8 range
-        s = _fetch_yahoo_v8_range(ticker, start, end)
+        s = _fetch_yahoo_v8_range(yf_sym, start, end)
         if s is not None and not s.empty:
             return float(s.iloc[0])
 
         # Fallback: yfinance
-        df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
+        df = yf.Ticker(yf_sym).history(start=start, end=end, auto_adjust=True)
         if df is not None and not df.empty:
             close = df["Close"].dropna()
             if not close.empty:

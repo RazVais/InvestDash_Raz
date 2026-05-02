@@ -16,6 +16,7 @@ Personal investment dashboard for Raz's portfolio. Built with Streamlit + Python
 | One fetch per trading day | Analyst data doesn't change intra-day; `trading_day` date string passed as cache key |
 | No fetch when market closed | Weekend/holiday = Refresh button disabled; existing `@st.cache_data` served |
 | `portfolio.json` for persistence | Single-user local app; JSON is human-readable and editable |
+| GitHub Gist for cloud portfolio | Enables Streamlit Community Cloud deployment; `portfolio.py` reads/writes via GitHub API (`GIST_ID` + `GITHUB_TOKEN` in secrets); falls back to local `portfolio.json` if unconfigured |
 | Per-ticker try/except in all fetchers | One bad ticker (e.g. ESLT) must never block the rest |
 | finvizfinance 0.3s sleep | Rate limiting — Finviz silently 429s if hammered |
 | yfinance per-symbol fetch in macro | `yf.download()` multi-ticker batch returns MultiIndex that silently fails; macro/commodity use per-symbol `Ticker().history()` in ThreadPoolExecutor instead |
@@ -51,14 +52,15 @@ RazDashboard/
 │   │   ├── macro.py             ← VIX, 10Y yield, DXY + 7-day history; commodities
 │   │   ├── news.py              ← get_news() — 5 articles per ticker
 │   │   ├── damodaran.py         ← Damodaran NYU sector benchmarks (P/E, EV/EBITDA, beta) — 7d cache
+│   │   ├── tase.py              ← pymaya wrapper: fetch_tase_current + fetch_tase_history; handles ETF vs mutual fund
 │   │   └── loader.py            ← load_all_data() two-tier parallel orchestrator
 │   └── tabs/
 │       ├── __init__.py
 │       ├── overview.py          ← סקירה: macro strip, performance table, donut, correlation
 │       ├── portfolio_tab.py     ← תיק שלי: multi-lot P&L table, add/edit/remove forms; 📈 יומן עסקאות sub-tab
 │       ├── trading_journal_tab.py ← יומן עסקאות: retroactive P&L analysis from lots + optional CSV upload
-│       ├── charts.py            ← גרפים: 1yr candlestick + RSI/MAs/Bollinger + ORB intraday chart
-│       ├── analysts_tab.py      ← אנליסטים: ניתוח יומי (session AI) | ⏰ תזמון קנייה (score + trailing stop) | קונצנזוס
+│       ├── charts.py            ← גרפים: 1yr candlestick + RSI/MAs/Bollinger + ORB intraday chart + Monte Carlo + 📏 Trailing Stop backtester
+│       ├── analysts_tab.py      ← אנליסטים: ניתוח יומי (session AI) | ⏰ תזמון קנייה (score) | קונצנזוס
 │       ├── fundamentals_tab.py  ← פונדמנטלס: valuation, earnings dates, dividends
 │       ├── red_flags.py         ← דגלים אדומים: all flags automated, NO "ידני"
 │       ├── news_tab.py          ← חדשות: latest articles per ticker
@@ -78,7 +80,7 @@ RazDashboard/
 
 | Layer | Tickers |
 |---|---|
-| Core (50%) | VOO, XAR |
+| Core (50%) | VOO, XAR, 1146356 (KSM TA-125 ETF) |
 | Physical Infrastructure | CCJ, FCX, ETN, VRT, EQX |
 | Compute & Platform | AMD, AMZN, GOOGL |
 | Security & Stability | CRWD, ESLT |
@@ -167,6 +169,15 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | 2026-04-12 | analysts.py / EPS trend | `yf.Ticker.eps_trend` removed in yfinance 0.2.54 → always returns None | Fixed: try `earnings_estimate` (new name) first, then `eps_trend` as fallback via `getattr()` |
 | 2026-04-16 | analysts_tab / session analysis max_tokens | `_run_session_analysis` used `max_tokens=1200` for 13 tickers; response truncated mid-JSON → parse failure | Fixed: raised to `max_tokens=2500`; added `stop_reason=="max_tokens"` detection for clear error message |
 | 2026-04-16 | trading_journal_tab / _compute_by_setup | First line of function filtered df by `setup_type` before the guard `if "setup_type" not in df.columns` → crash when column absent | Fixed: moved guard to top of function |
+| 2026-05-01 | fundamentals.py / TASE ticker in Finviz | TASE numeric tickers (e.g. `1146356`) passed to Finviz → 404 HTTPError on every load | Fixed: `is_tase_numeric` guard at top of per-ticker loop in `get_finviz_fundamentals` |
+| 2026-05-01 | analysts.py / TASE ticker in yfinance analyst fetchers | `1146356` sent to `analyst_price_targets`, `upgrades_downgrades`, `recommendations_summary` → useless errors on every load | Fixed: `is_tase_numeric` early-return in `_fetch_one_target`, `_fetch_one_upgrades`, `_fetch_consensus_one` |
+| 2026-05-01 | analysts.py + macro.py / YFRateLimitError logged as ERROR | Yahoo Finance rate-limit responses (transient, self-resolving) logged at ERROR with full traceback → noisy logs | Fixed: import `YFRateLimitError` from `yfinance.exceptions`; helper `_yf_except()` demotes rate-limit hits to WARNING, keeps ERROR for real failures |
+| 2026-05-01 | prices.py / TASE numeric tickers not on Yahoo Finance | `1146356.TA` not indexed by Yahoo Finance → price/OHLCV always None → all columns show "—" | Fixed: `_process_tase_ticker()` routes TASE numeric tickers to `src/data/tase.py` (pymaya → api.tase.co.il); prices in NIS (agorot ÷ 100); name from `get_details()["Name"]` |
+| 2026-05-01 | prices.py / `_process_tase_ticker` DataFrame ambiguity crash | `fetch_tase_history(t) or pd.DataFrame()` calls `bool(df)` on returned DataFrame → `ValueError: The truth value of a DataFrame is ambiguous` → TASE ticker returns None | Fixed: `_hist = fetch_tase_history(t); ohlcv = _hist if _hist is not None else pd.DataFrame()` |
+| 2026-05-01 | tase.py / logging reserved field "name" | `_log.info(..., extra={"name": name})` crashes Python's logging framework — "name" is a reserved `LogRecord` attribute → `KeyError: "Attempt to overwrite 'name'"` → `fetch_tase_current` always returned None | Fixed: renamed extra key to `"sec_name"` |
+| 2026-05-01 | tase.py / mutual fund (5124516) no data | `5124516` is a KSM mutual fund (not ETF): `LastRate=None`, NAV in `SellPrice`/`PurchasePrice` (already NIS, not agorot); history in `SellPrice`/`PurchasePrice` with ISO dates instead of `CloseRate`/`DD/MM/YYYY` → no data returned | Fixed: rewritten `tase.py` detects ETF vs mutual fund by field availability; `_to_nis()` heuristic (raw≥1000 → agorot; else NIS); `_parse_tase_date()` tries both formats |
+| 2026-05-02 | charts.py / MC `add_vline` crash | `fig.add_vline(x=datetime)` triggers plotly's `_mean(str)` on datetime axis → crash when rendering MC today-divider line | Fixed: replaced with `fig.add_shape` + `fig.add_annotation` |
+| 2026-05-02 | charts.py / MC stat cards `</div>` rendered literally | blank line between f-string continuation literals broke Streamlit HTML block parser → `</div>` appeared as raw text in MC KPI cards | Fixed: extracted `sub_html` variable; f-string split into adjacent literals with no blank line |
 
 **Rule for Claude**: Every time a bug is caught or a feature is added, update the table above AND the Changelog below before finishing the task.
 
@@ -185,3 +196,6 @@ Status rendering: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין �
 | v3.2 | 2026-04-09 | XAR (SPDR Aerospace & Defense ETF) added as Security & Stability sector benchmark; per-layer alpha (XAR for defense, SPY for others); Finviz-style portfolio heatmap in overview + analysts tabs; conviction scatter matrix; 📋 יומי merged into אנליסטים as sub-tab |
 | v3.3 | 2026-04-12 | ⏰ תזמון קנייה tab: AI buy timing scoring (RSI+SMA+Bollinger+upside+VIX+Damodaran P/E) 0-100 score; Damodaran NYU sector benchmark fetcher (P/E, EV/EBITDA, beta); Claude Haiku verdict card with Buffett/Lynch + Damodaran + Breitstein frameworks; fixed JSON fence parsing + EPS trend fallback |
 | v3.4 | 2026-04-17 | ORB intraday chart (Python/Plotly, yfinance 5-min data, 5-condition signal, VWAP, episode state machine); buy price field in add/edit lot forms with auto-fill; Today's Session AI briefing (all-tickers Claude Haiku, priority table); 📈 יומן עסקאות sub-tab (retroactive P&L from portfolio lots + optional broker CSV, 6 analysis sections + pattern detection); 📏 Trailing Stop backtester in buy timing tab (n-bar trailing, MA cross entry, color-coded stop line); fixed session analysis max_tokens truncation |
+| v3.5 | 2026-04-19 | Monte Carlo GBM simulation in Charts tab (fan chart + 6 KPI cards); Watchlist (0-share lots, visible in overview + portfolio tabs); Portfolio Stress Test in overview tab (6 macro scenarios × all tickers heatmap + portfolio-level bar chart + scenario detail with worst/best performers); TASE numeric security support (5-9 digit IDs like 1146356 auto-appended .TA for Yahoo Finance; ILS prices shown with ₪; TASE totals tracked separately from USD grand total) |
+| v3.6 | 2026-05-01 | TASE live data via pymaya (api.tase.co.il): `_process_tase_ticker` fetches current price + 1yr OHLCV in NIS; name from `get_details()`; TASE tickers skipped in Finviz, analyst targets, upgrades, consensus; `YFRateLimitError` demoted to WARNING in analysts + macro; mutual fund support (`5124516` KSM קרן נאמנות) — both ETF and NAV-priced fund types handled; ILS→USD rate weekly-cached for donut chart; Plotly axis labels show `TICKER_NAMES` display names |
+| v3.7 | 2026-05-02 | Watch-only mode: 👁 toggle in add-lot form (0-share lot), 📍 מעקב section in portfolio tab, dimmed rows + 👁 indicator in overview performance table; MC max profit KPI card (6th card: best-case simulation %); 📏 Trailing Stop backtester moved from analysts tab to charts tab; Portfolio Stress Test (6 macro scenarios) committed to overview tab; 1146356 (KSM TA-125 ETF) added to Core (50%) layer; GitHub Gist cloud backend for portfolio persistence (GIST_ID + GITHUB_TOKEN in secrets, falls back to local file); fixed MC datetime axis crash (add_vline → add_shape) + MC stat cards HTML rendering |

@@ -1,4 +1,4 @@
-# RazDashboard v3.4
+# RazDashboard v3.7
 
 Personal investment dashboard for the "Age of AI" portfolio. Tracks stocks across strategic layers with live data from Yahoo Finance, Finviz, and Finnhub. Built with Streamlit + Python, Hebrew RTL UI.
 
@@ -16,8 +16,8 @@ Live stats bar at the top of every page:
 
 ### Primary tabs (sidebar)
 - **סקירה (Overview)** — macro strip (VIX, 10Y yield, DXY), performance table with upside % and alpha vs VOO, portfolio P&L summary, sector allocation donut chart, 1-year correlation matrix heatmap
-- **תיק שלי (Portfolio)** — two sub-tabs: **📊 תיק שלי**: multi-lot model with individual dates, buy prices (auto-filled from live data if left blank), and P&L; add/edit/remove lots; **📈 יומן עסקאות**: retroactive trading performance analysis — auto-loads all portfolio lots from first buy date, optional broker CSV supplement for closed trades; 6 analysis sections: overall stats (win rate, expectancy, avg win/loss), by portfolio layer, by setup type, by time-of-day block (9:30–16:00), by day of week, and auto pattern detection with Hebrew recommendations
-- **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO; **ORB (Opening Range Breakout)** intraday chart: 5-condition signal (price break + volume surge + above VWAP + trade window + top-50% bar close), configurable interval (1m/2m/5m/15m) and volume multiplier, green background on active episodes
+- **תיק שלי (Portfolio)** — two sub-tabs: **📊 תיק שלי**: multi-lot model with individual dates, buy prices (auto-filled from live data if left blank), and P&L; add/edit/remove lots; toggle **👁 מעקב בלבד** to track a ticker without a position — it appears across all analysis tabs but is excluded from P&L, shown with a 👁 indicator and dimmed row in Overview; **📈 יומן עסקאות**: retroactive trading performance analysis — auto-loads all portfolio lots from first buy date, optional broker CSV supplement for closed trades; 6 analysis sections: overall stats (win rate, expectancy, avg win/loss), by portfolio layer, by setup type, by time-of-day block (9:30–16:00), by day of week, and auto pattern detection with Hebrew recommendations
+- **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO; **ORB (Opening Range Breakout)** intraday chart: 5-condition signal (price break + volume surge + above VWAP + trade window + top-50% bar close), configurable interval (1m/2m/5m/15m) and volume multiplier, green background on active episodes; **Monte Carlo GBM simulation**: 252-day fan chart (1 000 paths) + 6 KPI cards: profit probability, median price, P5, P95, VaR(5%), and max profit (best-case path)
 - **אנליסטים (Analysts)** — three sub-tabs:
   - **📋 ניתוח יומי** — Finviz-style heatmap, market pulse KPIs, analyst conviction scatter matrix; **📊 Today's Session AI briefing**: single Claude Haiku call covers all tickers, returns priority-sorted table (High/Medium/Low) with catalyst, price assessment, support/resistance levels (R:$X S:$Y), and likely intraday setup; overall market context paragraph; Claude Haiku per-ticker daily brief
   - **⏰ תזמון קנייה** — AI buy timing: 0-100 signal score (RSI, SMA50/200, Bollinger, analyst upside, VIX, Damodaran sector P/E) + Claude Haiku Hebrew verdict card using Buffett/Lynch, Damodaran, and Breitstein frameworks; tickers ranked best opportunity first; **📏 Trailing Stop backtester**: n-bar trailing stop on 1yr daily data, MA-cross entry, color-coded stop line (red=initial/green=trailing), entry/exit markers, configurable lookback + MA periods, win rate + P&L stats
@@ -76,6 +76,8 @@ streamlit run dashboard.py
 
 Positions are stored in `portfolio.json` (auto-created on first run, gitignored). Each ticker supports multiple buy lots with different dates — cost basis and P&L are calculated per lot from historical prices.
 
+For cloud deployment, portfolio is persisted to a **GitHub Gist** (`GIST_ID` + `GITHUB_TOKEN` in secrets); the app falls back to the local file when not configured.
+
 Manage positions through the **תיק שלי** tab: add a lot (ticker + shares + buy date), edit shares or date on existing lots, or remove lots/tickers entirely. Adding a new ticker automatically includes it in all analysis.
 
 ## Architecture
@@ -114,3 +116,7 @@ dashboard.py          ← thin entry point (page config, KPI header, routing)
 | v2.1 | 2026-04-02 | Two-tier parallel data loading with background cache warming |
 | v2.2 | 2026-04-02 | 📋 יומי daily brief tab + 🔬 ניתוח 5-filter analysis tab with Claude Haiku AI |
 | v3.0 | 2026-04-03 | Bloomberg-style UI: sidebar primary nav, KPI header (value/P&L/alpha/bell), secondary tab bar, macro sparklines |
+| v3.1–v3.4 | 2026-03-29 – 2026-04-17 | Code quality refactor; AI daily briefs + 5-filter analysis; Damodaran benchmarks; ORB intraday chart; trading journal; buy timing AI; GitHub Gist cloud backend |
+| v3.5 | 2026-04-19 | Monte Carlo GBM simulation; watch-only mode (0-share lots); Portfolio Stress Test; TASE numeric security support |
+| v3.6 | 2026-05-01 | TASE live data via pymaya (api.tase.co.il); mutual fund support; YFRateLimitError handling |
+| v3.7 | 2026-05-02 | Watch-only UI (toggle, 📍 section, 👁 overview indicator); MC max profit KPI card; MC chart crash fixes |

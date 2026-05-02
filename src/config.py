@@ -1,6 +1,26 @@
 """Central configuration: tickers, layers, display names, Hebrew strings, flag thresholds."""
 
+import re as _re
 from pathlib import Path
+
+
+# ── TASE (Tel Aviv Stock Exchange) helpers ────────────────────────────────────
+_TASE_NUMERIC_RE = _re.compile(r'^\d{5,9}$')
+
+
+def is_tase_numeric(ticker: str) -> bool:
+    """Return True if ticker is a numeric TASE security ID (e.g. '1146356').
+
+    TASE ETFs and stocks without a letter-based ticker are identified by a
+    5-9 digit security number on the Tel Aviv Stock Exchange.
+    Yahoo Finance exposes them with the '.TA' suffix (e.g. '1146356.TA').
+    """
+    return bool(_TASE_NUMERIC_RE.match(ticker.strip()))
+
+
+def tase_yf_symbol(ticker: str) -> str:
+    """Return the Yahoo Finance symbol for a TASE numeric ticker (appends '.TA')."""
+    return f"{ticker.strip()}.TA"
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 PROJECT_ROOT   = Path(__file__).parent.parent
@@ -8,7 +28,7 @@ PORTFOLIO_FILE = PROJECT_ROOT / "portfolio.json"
 
 # ── Portfolio layers ───────────────────────────────────────────────────────────
 TICKERS_BY_LAYER = {
-    "Core (50%)":             ["VOO", "XAR"],
+    "Core (50%)":             ["VOO", "XAR", "1146356"],
     "Physical Infrastructure": ["CCJ", "FCX", "ETN", "VRT", "EQX"],
     "Compute & Platform":      ["AMD", "AMZN", "GOOGL"],
     "Security & Stability":    ["CRWD", "ESLT"],
@@ -121,8 +141,10 @@ def guess_layer(ticker: str) -> str:
 
 
 TICKER_NAMES = {
-    "VOO":   "Vanguard S&P 500 ETF",
-    "XAR":   "SPDR S&P Aerospace & Defense ETF",
+    "VOO":     "Vanguard S&P 500 ETF",
+    "XAR":     "SPDR S&P Aerospace & Defense ETF",
+    "1146356": "KSM TA-125 ETF",
+    "5124516": "KSM קרן נאמנות",
     "CCJ":   "Cameco — אורניום",
     "FCX":   "Freeport-McMoRan — נחושת",
     "ETN":   "Eaton — תשתיות חשמל",
@@ -134,13 +156,32 @@ TICKER_NAMES = {
     "ESLT":  "אלביט מערכות",
     "TEVA":  "טבע תעשיות פרמצבטיות",
     "EQX":   "Equinox Gold — זהב",
+    # Common additions — populated when user adds these to portfolio
+    "NVDA":  "NVIDIA",
+    "MSFT":  "Microsoft",
+    "AAPL":  "Apple",
+    "META":  "Meta Platforms",
+    "AVGO":  "Broadcom",
+    "MRVL":  "Marvell Technology",
+    "WPM":   "Wheaton Precious Metals",
+    "PANW":  "Palo Alto Networks",
+    "TSM":   "Taiwan Semiconductor",
+    "NXE":   "NexGen Energy",
+    "PLTR":  "Palantir Technologies",
+    "TSLA":  "Tesla",
+    "LMT":   "Lockheed Martin",
+    "RTX":   "RTX Corp (Raytheon)",
+    "GLD":   "SPDR Gold Shares ETF",
+    "QQQ":   "Invesco NASDAQ-100 ETF",
+    "SPY":   "SPDR S&P 500 ETF",
+    "AGX":   "Argan Inc.",
 }
 
 # Tickers with limited/no US analyst coverage — expected to have sparse data
-KNOWN_LIMITED_TICKERS = {"ESLT"}
+KNOWN_LIMITED_TICKERS = {"ESLT", "1146356", "5124516"}
 
 # ETFs in the portfolio — no P/E, ROE, EPS etc. (no earnings, no equity returns)
-PORTFOLIO_ETFS = {"VOO", "XAR"}
+PORTFOLIO_ETFS = {"VOO", "XAR", "1146356", "5124516"}
 
 # Sector ETF benchmarks for relative-strength computation
 SECTOR_ETFS = {

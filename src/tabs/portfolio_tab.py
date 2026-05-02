@@ -4,7 +4,7 @@ from datetime import date
 
 import streamlit as st
 
-from src.config import COLOR, TICKER_NAMES, guess_layer
+from src.config import COLOR, TICKER_NAMES, guess_layer, is_tase_numeric
 from src.data.prices import get_current_price_or_daily_avg, lookup_buy_price
 from src.portfolio import (
     add_lot,
@@ -32,7 +32,7 @@ def render_portfolio(portfolio, data):
         with c2:
             _form_edit_lot(portfolio, prices)
         with c3:
-            _form_remove(portfolio)
+            _form_remove(portfolio, prices)
 
     with tab_journal:
         render_trading_journal(portfolio, data)
@@ -59,6 +59,7 @@ def _render_pnl_table(portfolio, prices):
         )
 
     grand_cost = grand_value = grand_pnl = 0.0
+    tase_cost = tase_value = tase_pnl = 0.0  # ILS totals tracked separately
 
     # ── Table header (column labels) ──────────────────────────────
     _, col_hdr = st.columns([1, 24])
@@ -81,8 +82,10 @@ def _render_pnl_table(portfolio, prices):
 
     # ── Per-ticker rows ───────────────────────────────────────────
     for t in sorted(all_tickers(portfolio)):
-        p = prices.get(t)
+        p         = prices.get(t)
         cur_price = p["price"] if p else None
+        is_tase   = is_tase_numeric(t) or (p.get("currency") == "ILS" if p else False)
+        sym       = "₪" if is_tase else "$"
         lot_html_rows = ""
         t_cost = t_value = t_pnl = t_shares = 0.0
 
@@ -106,12 +109,12 @@ def _render_pnl_table(portfolio, prices):
             if pnl is not None:
                 t_pnl += pnl
 
-            bp_str    = f"${bp:.2f}"    if bp    else "—"
-            lot_cost  = f"${cost:.0f}"  if cost  else "—"
-            lot_val   = f"${value:.0f}" if value else "—"
+            bp_str    = f"{sym}{bp:.2f}"    if bp    else "—"
+            lot_cost  = f"{sym}{cost:.0f}"  if cost  else "—"
+            lot_val   = f"{sym}{value:.0f}" if value else "—"
             pnl_c = COLOR["positive"] if (pnl or 0) >= 0 else COLOR["negative"]
             pnl_str = (
-                f'<span style="color:{pnl_c}">${pnl:+,.0f} ({pnl_pct:+.1f}%)</span>'
+                f'<span style="color:{pnl_c}">{sym}{pnl:+,.0f} ({pnl_pct:+.1f}%)</span>'
                 if pnl is not None else "—"
             )
 
@@ -130,15 +133,22 @@ def _render_pnl_table(portfolio, prices):
         if not lot_html_rows:
             continue
 
-        cur_str  = f"${cur_price:.2f}" if cur_price else "—"
-        cost_str = f"${t_cost:,.0f}"   if t_cost > 0  else "—"
-        val_str  = f"${t_value:,.0f}"  if t_value > 0 else "—"
+        # TASE badge for numeric tickers
+        tase_badge = (
+            '<span style="font-size:9px;color:#888;border:1px solid #555;'
+            'border-radius:3px;padding:0 3px;margin-right:4px">TASE ₪</span>'
+            if is_tase else ""
+        )
+
+        cur_str  = f"{sym}{cur_price:.2f}" if cur_price else "—"
+        cost_str = f"{sym}{t_cost:,.0f}"   if t_cost > 0  else "—"
+        val_str  = f"{sym}{t_value:,.0f}"  if t_value > 0 else "—"
         if t_cost > 0 and t_value > 0:
             tot_pnl_c   = COLOR["positive"] if t_pnl >= 0 else COLOR["negative"]
             tot_pnl_pct = t_pnl / t_cost * 100
             tot_str = (
                 f'<span style="color:{tot_pnl_c};font-weight:700">'
-                f'${t_pnl:+,.0f} ({tot_pnl_pct:+.1f}%)</span>'
+                f'{sym}{t_pnl:+,.0f} ({tot_pnl_pct:+.1f}%)</span>'
             )
         else:
             tot_str = f'<span style="color:{COLOR["text_dim"]}">—</span>'
@@ -150,9 +160,9 @@ def _render_pnl_table(portfolio, prices):
         summary_row = (
             f'<tr style="background:{COLOR["bg_dark"]}">'
             f'<td style="{_HDR_TD};color:{COLOR["primary"]};'
-            f'border-left:3px solid {COLOR["primary"]}">{t}</td>'
+            f'border-left:3px solid {COLOR["primary"]}">{tase_badge}{t}</td>'
             f'<td style="{_HDR_TD};font-size:10px;color:{COLOR["text_dim"]}">'
-            f'{TICKER_NAMES.get(t, "")}</td>'
+            f'{TICKER_NAMES.get(t) or (p.get("name", "") if p else "")}</td>'
             f'<td style="{_HDR_TD}">{t_shares:.3f}</td>'
             f'<td style="{_HDR_TD}">{cur_str}</td>'
             f'<td style="{_HDR_TD}">{cost_str}</td>'
@@ -171,11 +181,16 @@ def _render_pnl_table(portfolio, prices):
             body = summary_row + (lot_html_rows if expanded else "")
             st.markdown(_make_table(body), unsafe_allow_html=True)
 
-        grand_cost  += t_cost
-        grand_value += t_value
-        grand_pnl   += t_pnl
+        if is_tase:
+            tase_cost  += t_cost
+            tase_value += t_value
+            tase_pnl   += t_pnl
+        else:
+            grand_cost  += t_cost
+            grand_value += t_value
+            grand_pnl   += t_pnl
 
-    # ── Grand total ───────────────────────────────────────────────
+    # ── Grand total (USD) ─────────────────────────────────────────
     g_pnl_c   = COLOR["positive"] if grand_pnl >= 0 else COLOR["negative"]
     g_pnl_pct = (grand_pnl / grand_cost * 100) if grand_cost > 0 else 0.0
     _, col_total = st.columns([1, 24])
@@ -183,7 +198,7 @@ def _render_pnl_table(portfolio, prices):
         st.markdown(
             _make_table(
                 f'<tr style="background:#0a1a0a;border-top:2px solid {COLOR["primary"]}">'
-                f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">סה״כ</td>'
+                f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">סה״כ USD</td>'
                 f'<td style="{_TD}"></td>'
                 f'<td style="{_TD}"></td>'
                 f'<td style="{_TD}"></td>'
@@ -195,6 +210,28 @@ def _render_pnl_table(portfolio, prices):
             ),
             unsafe_allow_html=True,
         )
+
+    # ── TASE total (ILS) — shown only when TASE positions exist ──
+    if tase_cost > 0 or tase_value > 0:
+        t_pnl_c   = COLOR["positive"] if tase_pnl >= 0 else COLOR["negative"]
+        t_pnl_pct = (tase_pnl / tase_cost * 100) if tase_cost > 0 else 0.0
+        _, col_tase = st.columns([1, 24])
+        with col_tase:
+            st.markdown(
+                _make_table(
+                    f'<tr style="background:#0a0a1a;border-top:1px solid #334">'
+                    f'<td style="{_TD};font-weight:700;color:#7c9fbf">סה״כ TASE ₪</td>'
+                    f'<td style="{_TD};font-size:9px;color:{COLOR["text_dim"]}">מחירים בש״ח</td>'
+                    f'<td style="{_TD}"></td>'
+                    f'<td style="{_TD}"></td>'
+                    f'<td style="{_TD};font-weight:700">₪{tase_cost:,.0f}</td>'
+                    f'<td style="{_TD};font-weight:700">₪{tase_value:,.0f}</td>'
+                    f'<td style="{_TD};font-weight:700;color:{t_pnl_c}">'
+                    f'₪{tase_pnl:+,.0f} ({t_pnl_pct:+.1f}%)</td>'
+                    f'</tr>'
+                ),
+                unsafe_allow_html=True,
+            )
 
     # ── Watchlist (0-share tickers) ───────────────────────────────
     watched = [
@@ -376,7 +413,60 @@ def _form_edit_lot(portfolio, prices):
             st.rerun()
 
 
-def _form_remove(portfolio):
+def _reinvest_preview(t, lots_to_sell, prices):
+    """Render a reinvestment preview card before the user confirms a removal.
+
+    Shows current-price proceeds, original cost (if buy_price stored), P&L,
+    and highlights the net cash available to reinvest.
+    Uses stored buy_price only — no extra network calls.
+    """
+    p = prices.get(t) or {}
+    cur_price = p.get("price")
+    if not cur_price:
+        return
+
+    is_tase = is_tase_numeric(t) or p.get("currency") == "ILS"
+    sym = "₪" if is_tase else "$"
+
+    total_shares = sum(lot.get("shares", 0) for lot in lots_to_sell)
+    proceeds     = total_shares * cur_price
+    total_cost   = sum(
+        lot.get("shares", 0) * lot["buy_price"]
+        for lot in lots_to_sell
+        if lot.get("buy_price")
+    )
+    has_cost = total_cost > 0
+    pnl      = (proceeds - total_cost) if has_cost else None
+    pnl_pct  = (pnl / total_cost * 100) if (pnl is not None and total_cost > 0) else None
+    pnl_c    = COLOR["positive"] if (pnl or 0) >= 0 else COLOR["negative"]
+
+    header = f'<div style="font-size:11px;color:#888;margin-bottom:4px">{t} — {total_shares:.3f} מניות @ {sym}{cur_price:.2f}</div>'
+    cost_row = (
+        f'<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0">'
+        f'<span style="color:#aaa">עלות מקורית</span><span>{sym}{total_cost:,.2f}</span></div>'
+        if has_cost else ""
+    )
+    pnl_row = (
+        f'<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0">'
+        f'<span style="color:#aaa">רווח/הפסד</span>'
+        f'<span style="color:{pnl_c}">{sym}{pnl:+,.2f} ({pnl_pct:+.1f}%)</span></div>'
+        if pnl is not None else ""
+    )
+    reinvest_row = (
+        f'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;'
+        f'padding:6px 0 2px;border-top:1px solid #2a4a2a;margin-top:4px">'
+        f'<span style="color:{COLOR["primary"]}">💰 לרינבסטמנט</span>'
+        f'<span style="color:{COLOR["primary"]}">{sym}{proceeds:,.2f}</span></div>'
+    )
+    st.markdown(
+        f'<div style="background:#0d1f0d;border:1px solid #2a4a2a;border-radius:8px;'
+        f'padding:10px 14px;margin-bottom:8px">'
+        f'{header}{cost_row}{pnl_row}{reinvest_row}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _form_remove(portfolio, prices):
     with st.expander("🗑 הסר"):
         tickers_all = sorted(all_tickers(portfolio))
         if not tickers_all:
@@ -389,17 +479,25 @@ def _form_remove(portfolio):
             t_sel = st.selectbox("סימול", tickers_all, key="rm_ticker")
             lots  = [(layer, lot) for layer, lot in lots_for_ticker(portfolio, t_sel)]
             if lots:
-                lot_labels = [f"{lot['buy_date']} × {lot['shares']:.3f}" for _l, lot in lots]
+                lot_labels = [
+                    f"{lot['buy_date']} × {lot['shares']:.3f}"
+                    + (f" @ {'₪' if is_tase_numeric(t_sel) else '$'}{lot['buy_price']:.2f}" if lot.get("buy_price") else "")
+                    for _l, lot in lots
+                ]
                 sel_idx    = st.selectbox("לוט", range(len(lots)),
                                            format_func=lambda i: lot_labels[i], key="rm_lot_sel")
                 sel_layer, sel_lot = lots[sel_idx]
+                _reinvest_preview(t_sel, [sel_lot], prices)
                 if st.button("הסר לוט", key="rm_lot_btn"):
                     remove_lot(portfolio, sel_layer, t_sel, sel_lot["buy_date"])
                     st.cache_data.clear()
                     st.success(f"לוט הוסר: {t_sel} {sel_lot['buy_date']}")
                     st.rerun()
         else:
-            t_sel = st.selectbox("סימול להסרה מלאה", tickers_all, key="rm_full_ticker")
+            t_sel    = st.selectbox("סימול להסרה מלאה", tickers_all, key="rm_full_ticker")
+            all_lots = [lot for _l, lot in lots_for_ticker(portfolio, t_sel) if lot.get("shares", 0) > 0]
+            if all_lots:
+                _reinvest_preview(t_sel, all_lots, prices)
             st.warning(f"זה יסיר את כל הלוטים של {t_sel}!")
             if st.button(f"הסר את {t_sel}", key="rm_full_btn"):
                 remove_ticker(portfolio, t_sel)

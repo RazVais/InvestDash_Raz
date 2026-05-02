@@ -251,6 +251,8 @@ def render_charts(portfolio, data):
     _render_orb_chart(sel)
     st.divider()
     _render_monte_carlo_section(sel, prices, targets)
+    st.divider()
+    _render_trailing_stop_section(sel, prices)
 
 
 # ── ORB: Opening Range Breakout (Python / Plotly) ─────────────────────────────
@@ -771,3 +773,367 @@ def _render_monte_carlo_section(ticker, prices, targets):
         ("חציון (P50)",
          "מחצית הסימולציות מסתיימות מעל לערך זה ומחצית מתחתיו."),
     ], label="📖 מקרא — מונטה קארלו")
+
+
+# ── Trailing Stop Backtester ──────────────────────────────────────────────────
+
+def _compute_trailing_stop(
+    ohlcv: "pd.DataFrame",
+    n_bars: int = 2,
+    fast_ma: int = 20,
+    slow_ma: int = 50,
+) -> "pd.DataFrame":
+    """
+    Backtest a trailing stop strategy on 1-year daily OHLCV.
+
+    Entry:    fast_ma crosses above slow_ma.
+    Stop:     lowest Low of the previous n_bars at entry time.
+    Trailing: whenever current bar's High > max(High of previous n_bars),
+              raise stop to min(Low of previous n_bars) — never down.
+    Exit:     Close < current stop level.
+
+    Added columns (all prefixed with _ to mark as internal):
+      _fast_ma, _slow_ma  — moving average values
+      _stop               – stop level (None when not in trade)
+      _stop_color         – "red" (initial) | "green" (has trailed) | None
+      _entry, _exit       – bool flags
+    """
+    df = ohlcv[["Open", "High", "Low", "Close", "Volume"]].copy()
+    n  = len(df)
+
+    df["_fast_ma"] = df["Close"].rolling(fast_ma, min_periods=fast_ma).mean()
+    df["_slow_ma"] = df["Close"].rolling(slow_ma, min_periods=slow_ma).mean()
+
+    # Entry signal: fast MA crosses above slow MA on this bar
+    df["_ma_cross"] = (
+        (df["_fast_ma"] > df["_slow_ma"])
+        & (df["_fast_ma"].shift(1) <= df["_slow_ma"].shift(1))
+    )
+
+    # State machine — iterate bar by bar
+    stop_arr       = [None] * n
+    stop_color_arr = [None] * n
+    entry_arr      = [False] * n
+    exit_arr       = [False] * n
+
+    in_trade    = False
+    stop        = 0.0
+    stop_moved  = False
+    entry_price = 0.0  # noqa: F841
+
+    start_i = max(n_bars, slow_ma)
+
+    for i in range(start_i, n):
+        high_i  = float(df["High"].iat[i])
+        close_i = float(df["Close"].iat[i])
+        prev    = df.iloc[i - n_bars: i]
+        n_high  = float(prev["High"].max())
+        n_low   = float(prev["Low"].min())
+
+        if not in_trade:
+            if bool(df["_ma_cross"].iat[i]):
+                in_trade    = True
+                stop        = n_low
+                stop_moved  = False
+                entry_price = close_i
+                entry_arr[i] = True
+        else:
+            if high_i > n_high:
+                new_stop = n_low
+                if new_stop > stop:
+                    stop       = new_stop
+                    stop_moved = True
+
+            stop_arr[i]       = stop
+            stop_color_arr[i] = "green" if stop_moved else "red"
+
+            if close_i < stop:
+                exit_arr[i] = True
+                in_trade    = False
+                stop_moved  = False
+
+    df["_stop"]       = stop_arr
+    df["_stop_color"] = stop_color_arr
+    df["_entry"]      = entry_arr
+    df["_exit"]       = exit_arr
+    return df
+
+
+def _trailing_stop_stats(df: "pd.DataFrame") -> dict:
+    """Compute completed trade P&L statistics from trailing stop simulation."""
+    entry_rows = df[df["_entry"] == True]
+    exit_rows  = df[df["_exit"]  == True]
+    entry_idx  = entry_rows.index.tolist()
+    exit_idx   = exit_rows.index.tolist()
+
+    pnl_pcts: list = []
+    for ei in exit_idx:
+        prior = [e for e in entry_idx if e < ei]
+        if not prior:
+            continue
+        ep = float(df.loc[prior[-1], "Close"])
+        xp = float(df.loc[ei, "Close"])
+        if ep > 0:
+            pnl_pcts.append((xp - ep) / ep * 100)
+
+    if not pnl_pcts:
+        return {
+            "n_trades": 0, "n_entries": len(entry_rows),
+            "win_rate": None, "avg_win": None, "avg_loss": None, "total_pnl_pct": None,
+        }
+
+    wins   = [p for p in pnl_pcts if p > 0]
+    losses = [p for p in pnl_pcts if p <= 0]
+    return {
+        "n_trades":      len(pnl_pcts),
+        "n_entries":     len(entry_rows),
+        "win_rate":      len(wins) / len(pnl_pcts),
+        "avg_win":       sum(wins)   / len(wins)   if wins   else None,
+        "avg_loss":      sum(losses) / len(losses) if losses else None,
+        "total_pnl_pct": sum(pnl_pcts),
+    }
+
+
+def _build_trailing_stop_figure(
+    df: "pd.DataFrame",
+    ticker: str,
+    n_bars: int,
+    fast_ma: int,
+    slow_ma: int,
+    show_stop: bool,
+) -> go.Figure:
+    """
+    Plotly candlestick chart with MA lines, color-coded trailing stop,
+    and entry (triangle-up) / exit (square) markers.
+    """
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        name=ticker,
+        increasing_line_color="#26a69a",
+        decreasing_line_color="#ef5350",
+        showlegend=True,
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["_fast_ma"],
+        mode="lines", name=f"SMA {fast_ma}",
+        line={"color": "#00bcd4", "width": 1.5},
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["_slow_ma"],
+        mode="lines", name=f"SMA {slow_ma}",
+        line={"color": "#ff9800", "width": 1.5},
+    ))
+
+    if show_stop:
+        stop_s = df["_stop"].copy().astype(float)
+        colors = df["_stop_color"]
+
+        red = stop_s.copy()
+        red[colors != "red"] = None
+        fig.add_trace(go.Scatter(
+            x=df.index, y=red,
+            mode="lines", name="Stop ראשוני",
+            line={"color": "#F44336", "width": 2, "dash": "dot"},
+            connectgaps=False,
+        ))
+
+        green = stop_s.copy()
+        green[colors != "green"] = None
+        fig.add_trace(go.Scatter(
+            x=df.index, y=green,
+            mode="lines", name="Trailing Stop",
+            line={"color": "#4CAF50", "width": 2},
+            connectgaps=False,
+        ))
+
+    entries = df[df["_entry"] == True]
+    if not entries.empty:
+        fig.add_trace(go.Scatter(
+            x=entries.index,
+            y=(entries["Close"] * 0.997),
+            mode="markers", name="כניסה",
+            marker={
+                "symbol": "triangle-up",
+                "size":   13,
+                "color":  "#4CAF50",
+                "line":   {"color": "#ffffff", "width": 1},
+            },
+        ))
+
+    exits = df[df["_exit"] == True]
+    if not exits.empty:
+        fig.add_trace(go.Scatter(
+            x=exits.index,
+            y=(exits["Close"] * 1.003),
+            mode="markers", name="יציאה",
+            marker={
+                "symbol": "square",
+                "size":   11,
+                "color":  "#F44336",
+                "line":   {"color": "#ffffff", "width": 1},
+            },
+        ))
+
+    day_str = df.index[-1].strftime("%d/%m/%Y") if not df.empty else ""
+    fig.update_layout(
+        height=450,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#111111",
+        font={"color": "#ffffff", "size": 11},
+        title={
+            "text": (
+                f"{ticker} — {n_bars}-Bar Trailing Stop | "
+                f"Entry: SMA{fast_ma} × SMA{slow_ma} | עד {day_str}"
+            ),
+            "font": {"color": COLOR["primary"], "size": 13},
+            "x": 0,
+        },
+        xaxis_rangeslider_visible=False,
+        legend={"orientation": "h", "y": 1.06, "font": {"size": 10}},
+        margin={"t": 55, "b": 20, "l": 20, "r": 20},
+        hovermode="x unified",
+    )
+    fig.update_xaxes(gridcolor="#222", showgrid=True)
+    fig.update_yaxes(gridcolor="#222", showgrid=True, tickprefix="$")
+    return fig
+
+
+def _render_ts_stats(stats: dict) -> None:
+    """5-KPI strip showing trailing stop backtest results."""
+    def _mini(label: str, val: str, color: str) -> str:
+        return (
+            f'<div style="background:#1a1f2e;border:1px solid #1f2937;border-radius:6px;'
+            f'padding:8px 12px;text-align:center">'
+            f'<div style="font-size:10px;color:{COLOR["text_dim"]};margin-bottom:2px">{label}</div>'
+            f'<div style="font-size:16px;font-weight:700;color:{color}">{val}</div>'
+            f'</div>'
+        )
+
+    n  = stats.get("n_trades", 0)
+    wr = stats.get("win_rate")
+    aw = stats.get("avg_win")
+    al = stats.get("avg_loss")
+    tp = stats.get("total_pnl_pct")
+
+    wr_c = (COLOR["positive"] if (wr or 0) >= 0.5
+            else COLOR["warning"] if (wr or 0) >= 0.35
+            else COLOR["negative"])
+    tp_c = COLOR["positive"] if (tp or 0) > 0 else COLOR["negative"]
+
+    cards = [
+        ("עסקאות שנסגרו", str(n) if n else "0",                       COLOR["primary"]),
+        ("שיעור הצלחה",   f"{wr*100:.1f}%" if wr is not None else "—", wr_c),
+        ("רווח ממוצע",    f"+{aw:.1f}%" if aw is not None else "—",    COLOR["positive"]),
+        ("הפסד ממוצע",    f"{al:.1f}%" if al is not None else "—",     COLOR["negative"]),
+        ('סה"כ P&L',      f"{tp:+.1f}%" if tp is not None else "—",    tp_c),
+    ]
+    cols = st.columns(5)
+    for col, (lbl, val, c) in zip(cols, cards):
+        with col:
+            st.markdown(_mini(lbl, val, c), unsafe_allow_html=True)
+
+    if n == 0:
+        ne = stats.get("n_entries", 0)
+        msg = (
+            "לא נסגרו עסקאות בתקופה זו — אין מספיק חציות MA ב-1 שנה."
+            if ne == 0
+            else f"נפתחו {ne} עסקאות אך לא נסגרו (עדיין פתוחות בסוף התקופה)."
+        )
+        st.caption(msg)
+
+
+def _render_trailing_stop_section(sel: str, prices: dict) -> None:
+    """
+    Trailing stop backtester — rendered below Monte Carlo in the Charts tab.
+    Ticker comes from the shared Charts tab selectbox (sel parameter).
+    """
+    section_title(
+        "📏 Trailing Stop — בקרת סיכון דינמית",
+        "בדיקה רטרואקטיבית (1 שנה) — כניסה על חצייה MA, יציאה על סיחרור n-bar",
+    )
+
+    with st.expander("📖 איך זה עובד?", expanded=False):
+        st.markdown(
+            '<div dir="rtl" style="font-size:11px;color:#aaa;line-height:1.9">'
+            '<b style="color:#00cf8d">כניסה:</b> MA המהיר חוצה מעל MA האיטי — אות מומנטום קלאסי.<br>'
+            '<b style="color:#00cf8d">Stop ראשוני:</b> הנמוך ביותר של N הנרות האחרונים בעת הכניסה — '
+            'קו הגנה ראשוני (מנוקד אדום).<br>'
+            '<b style="color:#00cf8d">Trailing:</b> בכל פעם שהמחיר שובר שיא חדש של N נרות, '
+            'ה-Stop מוזז למעלה לנמוך החדש של N נרות — '
+            'מגן על רווחים צבורים, אף פעם לא יורד (ירוק רציף).<br>'
+            '<b style="color:#00cf8d">יציאה:</b> כאשר סגירה מתחת ל-Stop הנוכחי — '
+            'מסומן בריבוע אדום על הגרף.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Controls (no ticker selectbox — sel comes from Charts tab) ───────────
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        n_bars = st.slider("Lookback (bars)", min_value=1, max_value=10,
+                           value=2, key="ts_nbars",
+                           help="מספר הנרות לחישוב High/Low לצורך הזזת ה-Stop")
+    with c2:
+        fast_ma = st.slider("MA מהיר", min_value=5, max_value=100,
+                            value=20, key="ts_fast",
+                            help="MA הקצר — סיגנל כניסה מהיר יותר, יותר עסקאות")
+    with c3:
+        slow_ma = st.slider("MA איטי", min_value=20, max_value=200,
+                            value=50, key="ts_slow",
+                            help="MA הארוך — פילטר מגמה")
+    with c4:
+        st.markdown('<div style="margin-top:28px"></div>', unsafe_allow_html=True)
+        show_stop = st.checkbox("הצג Stop Line", value=True, key="ts_show_stop")
+
+    if fast_ma >= slow_ma:
+        st.warning("⚠️ MA מהיר חייב להיות קטן מ-MA האיטי.")
+        return
+
+    # ── Fetch OHLCV ──────────────────────────────────────────────────────────
+    p     = prices.get(sel) or {}
+    ohlcv = p.get("ohlcv")
+    if ohlcv is None or ohlcv.empty:
+        st.caption(f"אין נתוני OHLCV עבור {sel}.")
+        return
+    if len(ohlcv) < slow_ma + n_bars + 5:
+        st.caption(
+            f"אין מספיק ימי מסחר ({len(ohlcv)}) עבור MA{slow_ma}. "
+            f"הפחת את ה-MA האיטי."
+        )
+        return
+
+    # ── Compute & render ─────────────────────────────────────────────────────
+    try:
+        result_df = _compute_trailing_stop(ohlcv, n_bars=n_bars,
+                                           fast_ma=fast_ma, slow_ma=slow_ma)
+    except Exception as exc:
+        st.warning(f"שגיאה בחישוב: {exc}")
+        return
+
+    fig = _build_trailing_stop_figure(result_df, sel, n_bars, fast_ma, slow_ma, show_stop)
+    st.plotly_chart(fig, use_container_width=True)
+
+    stats = _trailing_stop_stats(result_df)
+    _render_ts_stats(stats)
+
+    color_legend([
+        ("#00bcd4", f"SMA {fast_ma} — ממוצע נע מהיר (כניסה)"),
+        ("#ff9800", f"SMA {slow_ma} — ממוצע נע איטי (מגמה)"),
+        ("#F44336", f"Stop ראשוני ({n_bars}-bar) — לא הוזזה עדיין"),
+        ("#4CAF50", f"Trailing Stop ({n_bars}-bar) — הוזזה למעלה"),
+        ("#4CAF50", "▲ כניסה — חצייה SMA"),
+        ("#F44336", "■ יציאה — סגירה מתחת ל-Stop"),
+    ])
+
+    term_glossary([
+        ("Trailing Stop",   "עצירת הפסד שזזה בכיוון אחד (למעלה). מגנה על רווחים צבורים."),
+        ("Lookback (bars)", f"N={n_bars} — מספר הנרות לאחור לחישוב Stop High/Low."),
+        ("MA Cross Entry",  f"כניסה: SMA{fast_ma} חוצה מעל SMA{slow_ma} = מומנטום חיובי."),
+        ("Stop ראשוני",     f"Low הנמוך ביותר של {n_bars} הנרות האחרונים בעת הכניסה."),
+        ("Trailing",        f"בכל פעם שנשבר שיא חדש של {n_bars} נרות, Stop מוזז ל-Low החדש."),
+        ("Win Rate",        "אחוז עסקאות רווחיות (סגירה מעל מחיר כניסה)."),
+    ])

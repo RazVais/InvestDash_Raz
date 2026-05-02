@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from src.config import is_tase_numeric
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -16,11 +17,26 @@ try:
 except ImportError:
     FINNHUB_AVAILABLE = False
 
+try:
+    from yfinance.exceptions import YFRateLimitError as _YFRateLimit
+except ImportError:
+    _YFRateLimit = None
+
+
+def _yf_except(exc, msg, **kw):
+    """Log rate-limit errors as WARNING, all others as ERROR with traceback."""
+    if _YFRateLimit and isinstance(exc, _YFRateLimit):
+        _log.warning(f"{msg} (rate limited)", **kw)
+    else:
+        _log.error(msg, exc_info=True, **kw)
+
 
 
 # ── Price targets ─────────────────────────────────────────────────────────────
 
 def _fetch_one_target(t):
+    if is_tase_numeric(t):
+        return t, None
     try:
         tgt = yf.Ticker(t).analyst_price_targets
         if tgt and tgt.get("mean") is not None:
@@ -32,8 +48,8 @@ def _fetch_one_target(t):
                 "count":  tgt.get("numberOfAnalysts", 0),
             }
         _log.warning("No analyst price targets for ticker", extra={"ticker": t})
-    except Exception:
-        _log.error("get_analyst_targets failed for ticker", exc_info=True, extra={"ticker": t})
+    except Exception as e:
+        _yf_except(e, "get_analyst_targets failed for ticker", extra={"ticker": t})
     return t, None
 
 
@@ -57,6 +73,8 @@ _COL_MAP = {
 def _fetch_one_upgrades(args):
     t, cutoff = args
     empty = pd.DataFrame(columns=["date", "firm", "action", "from_grade", "to_grade"])
+    if is_tase_numeric(t):
+        return t, empty.copy()
     try:
         df = yf.Ticker(t).upgrades_downgrades
         if df is None or df.empty:
@@ -79,8 +97,8 @@ def _fetch_one_upgrades(args):
                 df[col] = ""
 
         return t, df[["date", "firm", "action", "from_grade", "to_grade"]].reset_index(drop=True)
-    except Exception:
-        _log.error("get_upgrades_downgrades failed for ticker", exc_info=True, extra={"ticker": t})
+    except Exception as e:
+        _yf_except(e, "get_upgrades_downgrades failed for ticker", extra={"ticker": t})
         return t, empty.copy()
 
 
@@ -111,6 +129,9 @@ def get_consensus(tickers, trading_day, api_key=""):
 
 
 def _fetch_consensus_one(ticker, api_key):
+    if is_tase_numeric(ticker):
+        return {"strong_buy": 0, "buy": 0, "hold": 0, "sell": 0,
+                "strong_sell": 0, "total": 0, "label": "N/A"}
     # Try Finnhub first
     if FINNHUB_AVAILABLE and api_key and api_key not in ("", "your_key_here"):
         try:
@@ -129,7 +150,7 @@ def _fetch_consensus_one(ticker, api_key):
                     "label": _consensus_label(sb, b, h, s, ss, total),
                 }
         except Exception:
-            _log.error("Finnhub consensus fetch failed", exc_info=True, extra={"ticker": ticker})
+            _log.warning("Finnhub consensus fetch failed", extra={"ticker": ticker})
 
     # yfinance fallback
     try:
@@ -151,8 +172,8 @@ def _fetch_consensus_one(ticker, api_key):
                 "sell": s, "strong_sell": ss, "total": total,
                 "label": _consensus_label(sb, b, h, s, ss, total),
             }
-    except Exception:
-        _log.error("yfinance consensus fallback failed", exc_info=True, extra={"ticker": ticker})
+    except Exception as e:
+        _yf_except(e, "yfinance consensus fallback failed", extra={"ticker": ticker})
 
     _log.warning("No consensus data available for ticker", extra={"ticker": ticker})
     return {"strong_buy": 0, "buy": 0, "hold": 0, "sell": 0,

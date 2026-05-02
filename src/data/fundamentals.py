@@ -4,6 +4,7 @@ import time
 
 import streamlit as st
 
+from src.config import is_tase_numeric
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -50,6 +51,9 @@ def get_finviz_fundamentals(tickers, trading_day):
 
     result = {}
     for t in tickers:
+        if is_tase_numeric(t):
+            result[t] = {}
+            continue
         try:
             raw = fvf(t).ticker_fundament()
             mapped = {new: raw.get(orig, "-") for orig, new in _FIELDS.items()}
