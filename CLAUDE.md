@@ -110,24 +110,19 @@ RazDashboard/
 
 ---
 
-## Red Flag Logic (all automated — NO "ידני" ever)
+## Red Flag Logic
 
-| Ticker / Flag | Check | Thresholds |
-|---|---|---|
-| VOO | 6-month price drop from high | warn 7%, trigger 10% |
-| CCJ | Uranium futures UX1=F | warn $85, trigger $80 |
-| FCX | Copper futures HG=F | warn $4.50, trigger $4.20 |
-| ETN / VRT / AMD / AMZN / GOOGL / CRWD | Analyst proxy | see below |
-| ESLT | Price drop + downgrade count | drop 12%/20%, downgrades 1/3 |
-| TEVA | Stock price | warn $15, trigger $14 |
-| EQX | Gold futures GC=F | warn $4,200, trigger $4,000 |
-| 🗂 דירוג | 2+ major banks Sell/Underperform | — |
-| 🗂 מבנה | VOO % of total portfolio value | warn 45%, trigger 40% |
-| 🗂 תזה | Any non-VOO ticker consensus Sell or sell_fraction > 30% | — |
+All flags are **100% automated** — NO "ידני" (manual) status ever. Source of truth: `src/tabs/red_flags.py`.
 
-**Analyst proxy**: trigger if label==Sell OR sell_frac>30% OR downgrades≥3 OR drop≥20%; watch if Hold OR sell_frac>15% OR downgrades≥1 OR drop≥12%
+**Four flag categories** (read `red_flags.py` for current per-ticker thresholds):
+- **Commodity price** — checks spot price of a linked commodity futures (uranium, copper, gold) against warn/trigger thresholds
+- **Analyst proxy** — checks consensus label, sell fraction, recent downgrade count, and price drop vs highs
+- **Portfolio structure** — VOO allocation % of total portfolio value
+- **Thesis** — consensus Sell or high sell fraction on any non-VOO ticker
 
-Status: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין נתונים
+**Status rendering**: 🔴 מופעל / 🟡 מעקב / 🟢 תקין / ⚫ אין נתונים — never ⚪ or any manual label.
+
+When adding a new ticker: check `red_flags.py` to decide which category it belongs to and add it there.
 
 ---
 
