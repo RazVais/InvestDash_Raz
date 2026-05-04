@@ -12,7 +12,6 @@ from src.data.technicals import compute_correlation_matrix
 from src.portfolio import add_lot, all_tickers, get_layer_for_ticker, lots_for_ticker, remove_ticker
 from src.ui_helpers import color_legend, portfolio_treemap, section_title, term_glossary
 
-
 # ── Stress-test scenario definitions ─────────────────────────────────────────
 # Per-ticker shock estimates for 6 macro scenarios.
 # For tickers not listed in "overrides", fallback = beta × market_shock (capped at 2.5×).
@@ -97,17 +96,12 @@ def render_overview(portfolio, data, market_state, td_str):
     st.divider()
     _render_performance_table(portfolio, prices, targets, consensus)
     st.divider()
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        _render_pnl_summary(portfolio, prices)
-    with col2:
-        _render_allocation_donut(portfolio, prices)
-    st.divider()
-    _render_portfolio_heatmap(portfolio, prices)
-    st.divider()
-    _render_correlation_matrix(prices)
-    st.divider()
-    _render_stress_test(portfolio, prices)
+    _render_fundamentals_inline(portfolio, data, td_str)
+
+
+def _render_fundamentals_inline(portfolio, data, td_str):
+    from src.tabs.fundamentals_tab import render_fundamentals
+    render_fundamentals(portfolio, data, td_str)
 
 
 def _render_manage_tickers(portfolio):
@@ -366,8 +360,8 @@ def _render_pnl_summary(portfolio, prices):
         tase_pnl_pct = (tase_pnl / tase_cost * 100) if tase_cost > 0 else 0.0
         tase_pnl_c   = COLOR["positive"] if tase_pnl >= 0 else COLOR["negative"]
         html += (
-            f'<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334">'
-            f'<div style="font-size:10px;color:#7c9fbf;font-weight:600;margin-bottom:4px">TASE — בורסת תל אביב (₪)</div>'
+            '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334">'
+            '<div style="font-size:10px;color:#7c9fbf;font-weight:600;margin-bottom:4px">TASE — בורסת תל אביב (₪)</div>'
         )
         for label, val, color in [
             ("עלות כוללת (₪)",  f"₪{tase_cost:,.0f}",  ""),

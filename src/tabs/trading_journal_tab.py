@@ -515,11 +515,14 @@ def _render_kpi_grid(overall: Dict[str, Any]) -> None:
         wr_color = COLOR["neutral"]
         wr_str   = "—"
     elif wr >= 0.55:
-        wr_color = COLOR["positive"]; wr_str = f"{wr*100:.1f}%"
+        wr_color = COLOR["positive"]
+        wr_str = f"{wr*100:.1f}%"
     elif wr >= 0.40:
-        wr_color = COLOR["warning"];  wr_str = f"{wr*100:.1f}%"
+        wr_color = COLOR["warning"]
+        wr_str = f"{wr*100:.1f}%"
     else:
-        wr_color = COLOR["negative"]; wr_str = f"{wr*100:.1f}%"
+        wr_color = COLOR["negative"]
+        wr_str = f"{wr*100:.1f}%"
 
     exp_str   = _fmt_pnl(exp, "$") if exp is not None else "—"
     exp_color = _pnl_color(exp or 0)

@@ -152,3 +152,5 @@ When adding a new ticker: check `red_flags.py` to decide which category it belon
 |---|---|---|
 | v3.6 | 2026-05-01 | TASE live data via pymaya; mutual fund support; YFRateLimitError → WARNING; ILS→USD rate; TICKER_NAMES display names on Plotly axes |
 | v3.7 | 2026-05-02 | Watch-only mode (👁 toggle, 📍 מעקב section, overview indicator); MC max profit KPI card; Trailing Stop moved to charts tab; Portfolio Stress Test committed; 1146356 added to Core (50%); GitHub Gist backend; MC crash fixes |
+| v3.8 | 2026-05-02 | Charts: RS benchmark selector (SOXX/XLK/XAR/QQQ/GLD/XME; auto-defaults per ticker via `TICKER_BENCHMARK_DEFAULT`); dual-line RS view (sector bench + VOO context); MACD panel (12/26/9) with histogram; `compute_macd` added to `technicals.py` |
+| v3.9 | 2026-05-03 | UI restructure: default tab → "תיק שלי"; visual charts (donut/heatmap/corr/stress) moved to new "🗺 תרשימי תיק" sub-tab in portfolio; "פונדמנטלס" merged into "סקירה"; charts tab: dropdown → left ticker button banner; per-ticker analyst panel (session AI / buy timing / consensus) below each chart |

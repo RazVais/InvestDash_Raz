@@ -14,6 +14,13 @@ from src.portfolio import (
     remove_ticker,
     update_lot,
 )
+from src.tabs.overview import (
+    _render_allocation_donut,
+    _render_correlation_matrix,
+    _render_pnl_summary,
+    _render_portfolio_heatmap,
+    _render_stress_test,
+)
 from src.tabs.trading_journal_tab import render_trading_journal
 from src.ui_helpers import color_legend, section_title, term_glossary
 
@@ -21,7 +28,9 @@ from src.ui_helpers import color_legend, section_title, term_glossary
 def render_portfolio(portfolio, data):
     prices = data["prices"]
 
-    tab_portfolio, tab_journal = st.tabs(["📊 תיק שלי", "📈 יומן עסקאות"])
+    tab_portfolio, tab_visuals, tab_journal = st.tabs([
+        "📊 תיק שלי", "🗺 תרשימי תיק", "📈 יומן עסקאות"
+    ])
 
     with tab_portfolio:
         _render_pnl_table(portfolio, prices)
@@ -33,6 +42,19 @@ def render_portfolio(portfolio, data):
             _form_edit_lot(portfolio, prices)
         with c3:
             _form_remove(portfolio, prices)
+
+    with tab_visuals:
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            _render_pnl_summary(portfolio, prices)
+        with col2:
+            _render_allocation_donut(portfolio, prices)
+        st.divider()
+        _render_portfolio_heatmap(portfolio, prices)
+        st.divider()
+        _render_correlation_matrix(prices)
+        st.divider()
+        _render_stress_test(portfolio, prices)
 
     with tab_journal:
         render_trading_journal(portfolio, data)

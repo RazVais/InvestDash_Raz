@@ -17,8 +17,8 @@ Price normalisation rule:
 pymaya sessions are per-thread (threading.local) so this is safe inside ThreadPoolExecutor.
 """
 
-import threading
 from datetime import date, timedelta
+import threading
 
 import pandas as pd
 

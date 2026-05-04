@@ -1,8 +1,7 @@
 """Central configuration: tickers, layers, display names, Hebrew strings, flag thresholds."""
 
-import re as _re
 from pathlib import Path
-
+import re as _re
 
 # ── TASE (Tel Aviv Stock Exchange) helpers ────────────────────────────────────
 _TASE_NUMERIC_RE = _re.compile(r'^\d{5,9}$')
@@ -175,6 +174,11 @@ TICKER_NAMES = {
     "QQQ":   "Invesco NASDAQ-100 ETF",
     "SPY":   "SPDR S&P 500 ETF",
     "AGX":   "Argan Inc.",
+    "SOXX":  "iShares PHLX Semiconductor ETF",
+    "XME":   "SPDR S&P Metals & Mining ETF",
+    "XLK":   "Technology Select Sector SPDR ETF",
+    "XLV":   "Health Care Select Sector SPDR ETF",
+    "XLI":   "Industrial Select Sector SPDR ETF",
 }
 
 # Tickers with limited/no US analyst coverage — expected to have sparse data
@@ -190,6 +194,39 @@ SECTOR_ETFS = {
     "Compute & Platform":      "XLK",
     "Security & Stability":    "XAR",
     "Healthcare & Pharma":     "XLV",
+}
+
+# Semiconductor sub-sector benchmark
+SEMICONDUCTOR_ETF = "SOXX"  # iShares PHLX Semiconductor ETF
+
+# Per-ticker smart benchmark defaults for the RS chart selector
+TICKER_BENCHMARK_DEFAULT = {
+    # Semiconductors → SOXX
+    "NVDA": "SOXX", "AMD": "SOXX", "TSM": "SOXX", "INTC": "SOXX",
+    "QCOM": "SOXX", "AVGO": "SOXX", "MU": "SOXX", "ASML": "SOXX",
+    # Cloud / Platform → XLK
+    "AMZN": "XLK", "GOOGL": "XLK", "MSFT": "XLK", "META": "XLK",
+    "ORCL": "XLK", "SNOW": "XLK", "PLTR": "XLK", "CRM": "XLK",
+    # Defense / Cyber → XAR
+    "CRWD": "XAR", "ESLT": "XAR", "PANW": "XAR", "FTNT": "XAR",
+    "LMT": "XAR", "RTX": "XAR",
+    # Healthcare → XLV
+    "TEVA": "XLV",
+    # Materials / Uranium / Mining → XME / GLD
+    "CCJ": "XME", "FCX": "XME", "EQX": "GLD",
+}
+
+# Labels shown in the RS benchmark selectbox
+RS_BENCHMARK_LABELS = {
+    "VOO":  "VOO — S&P 500 (ברירת מחדל)",
+    "SOXX": "SOXX — שבבים (Philadelphia Semiconductor)",
+    "XLK":  "XLK — טכנולוגיה (Tech Sector ETF)",
+    "XAR":  "XAR — ביטחון ותעופה (Aerospace & Defense)",
+    "QQQ":  'QQQ — נאסד"ק 100',
+    "SPY":  "SPY — S&P 500 (SPDR)",
+    "XLV":  "XLV — בריאות (Health Care Sector)",
+    "GLD":  "GLD — זהב (Gold ETF)",
+    "XME":  "XME — חומרים ומחצבים (Materials ETF)",
 }
 
 # ── Red flag thresholds ────────────────────────────────────────────────────────
@@ -312,6 +349,8 @@ HE = {
     "low_52w":           "שפל 52 שבוע",
     "analyst_target":    "יעד אנליסטים",
     "rel_strength":      "חוזק יחסי vs VOO",
+    "rs_benchmark_sel":  "בנצ'מרק להשוואה",
+    "rs_vs_voo_ctx":     "vs VOO (הקשר)",
     # Earnings
     "earnings_date":     "תאריך דוח רווחים",
     "days_to_earnings":  "ימים לדוח",

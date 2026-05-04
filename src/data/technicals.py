@@ -37,6 +37,21 @@ def bollinger(close, window=20, num_std=2):
     return mid, upper, lower
 
 
+def compute_macd(close, fast=12, slow=26, signal=9):
+    """
+    MACD indicator — returns (macd_line, signal_line, histogram).
+    macd_line   = EMA(fast) - EMA(slow)
+    signal_line = EMA(signal) of macd_line
+    histogram   = macd_line - signal_line
+    """
+    ema_fast    = ema(close, fast)
+    ema_slow    = ema(close, slow)
+    macd_line   = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram   = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
 def compute_relative_strength(ticker_close, benchmark_close):
     """
     Relative strength of ticker vs benchmark, rebased to 100.

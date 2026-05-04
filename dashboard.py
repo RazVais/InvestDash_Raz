@@ -27,7 +27,6 @@ from src.tabs.overview         import render_overview
 from src.tabs.portfolio_tab    import render_portfolio
 from src.tabs.charts           import render_charts
 from src.tabs.analysts_tab     import render_analysts
-from src.tabs.fundamentals_tab import render_fundamentals
 from src.tabs.red_flags        import render_red_flags
 from src.tabs.news_tab         import render_news
 from src.tabs.suggestions_tab  import render_suggestions
@@ -36,16 +35,14 @@ from src.tabs.analysis_tab     import render_analysis
 _log = get_logger(__name__)
 
 # ── Navigation structure ──────────────────────────────────────────────────────
-_SIDEBAR_TABS = ["סקירה", "תיק שלי", "גרפים", "אנליסטים", "פונדמנטלס"]
+_SIDEBAR_TABS = ["סקירה", "תיק שלי", "גרפים", "אנליסטים"]
 _SIDEBAR_ICONS = {
-    "סקירה":     "📊",
-    "תיק שלי":   "💼",
-    "גרפים":     "📈",
-    "אנליסטים":  "👥",
-    "פונדמנטלס": "📋",
+    "סקירה":    "📊",
+    "תיק שלי":  "💼",
+    "גרפים":    "📈",
+    "אנליסטים": "👥",
 }
 _SECONDARY_TABS = ["חדשות", "💡 המלצות", "🔬 ניתוח"]
-_ALL_TABS = _SIDEBAR_TABS + _SECONDARY_TABS + ["דגלים אדומים"]
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -321,7 +318,7 @@ def _render_kpi_header(portfolio, data, n_triggered, n_watch):
 def _render_secondary_tab_bar():
     """Compact tab row for secondary content: News, Recommendations, Daily, Analysis."""
     if "active_tab" not in st.session_state:
-        st.session_state.active_tab = _ALL_TABS[0]
+        st.session_state.active_tab = "תיק שלי"
 
     st.markdown(
         '<div style="border-top:1px solid #1f2937;padding-top:4px;margin-top:8px"></div>',
@@ -570,7 +567,7 @@ def _render_sidebar_tools(market_state):
 def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=None, td_str=""):
     """Sidebar: logo/badge, primary nav, macro watchlist with sparklines, tools."""
     if "active_tab" not in st.session_state:
-        st.session_state.active_tab = _ALL_TABS[0]
+        st.session_state.active_tab = "תיק שלי"
 
     with st.sidebar:
         st.markdown(
@@ -597,11 +594,10 @@ def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=
 # ── Main helpers ──────────────────────────────────────────────────────────────
 
 _TAB_SLOW = {
-    "פונדמנטלס":   {"fundamentals", "earnings"},
+    "סקירה":        {"targets", "fundamentals", "earnings"},
     "חדשות":        {"news"},
     "אנליסטים":     {"targets", "upgrades"},
     "דגלים אדומים": {"upgrades", "commodities"},
-    "סקירה":        {"targets"},
     "גרפים":        {"targets"},
 }
 
@@ -643,11 +639,9 @@ def _render_tab_content(active, portfolio, data, market_state, td_str, api_key, 
     elif active == "תיק שלי":
         render_portfolio(portfolio, data)
     elif active == "גרפים":
-        render_charts(portfolio, data)
+        render_charts(portfolio, data, td_str, claude_api_key)
     elif active == "אנליסטים":
         render_analysts(portfolio, data, td_str, claude_api_key)
-    elif active == "פונדמנטלס":
-        render_fundamentals(portfolio, data, td_str)
     elif active == "דגלים אדומים":
         render_red_flags(portfolio, data, td_str)
     elif active == "חדשות":
@@ -670,7 +664,7 @@ def main():
     api_key, claude_api_key, smtp_cfg = _load_secrets()
 
     if "active_tab" not in st.session_state:
-        st.session_state.active_tab = _ALL_TABS[0]
+        st.session_state.active_tab = "תיק שלי"
     active = st.session_state.active_tab
 
     data = load_all_data(portfolio, market_state, api_key, active_tab=active)

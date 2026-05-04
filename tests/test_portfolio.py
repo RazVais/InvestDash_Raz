@@ -184,6 +184,11 @@ def test_load_portfolio_defaults_when_missing(tmp_path, monkeypatch):
 
 def test_load_portfolio_strips_empty_layers(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "PORTFOLIO_FILE", tmp_path / "portfolio.json")
+    try:
+        import streamlit as st
+        st.session_state.pop("_portfolio_cache", None)
+    except Exception:
+        pass
     data = {"layers": {"Empty": [], "Has Data": [{"ticker": "VOO", "shares": 1.0, "buy_date": "2024-01-01"}]}}
     (tmp_path / "portfolio.json").write_text(json.dumps(data), encoding="utf-8")
     p = load_portfolio()

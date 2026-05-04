@@ -138,8 +138,10 @@ def _build_session_prompt(tickers, data):
 
     # Macro header
     macro_line = "MACRO: "
-    if vix       is not None: macro_line += f"VIX={vix:.1f} "
-    if yield10y  is not None: macro_line += f"10Y_Yield={yield10y:.2f}% "
+    if vix is not None:
+        macro_line += f"VIX={vix:.1f} "
+    if yield10y is not None:
+        macro_line += f"10Y_Yield={yield10y:.2f}% "
     lines.append(macro_line.strip())
     lines.append("")
 

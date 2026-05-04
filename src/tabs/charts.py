@@ -1,29 +1,38 @@
 """Charts tab — 1-year candlestick with RSI, MAs, Bollinger, Volume, relative strength."""
 
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from src.config import COLOR, HE, TICKER_NAMES
+from src.config import (
+    COLOR,
+    HE,
+    RS_BENCHMARK_LABELS,
+    TICKER_BENCHMARK_DEFAULT,
+    TICKER_NAMES,
+    is_tase_numeric,
+)
 from src.data.prices import get_intraday_data
-from src.data.technicals import bollinger, compute_relative_strength, compute_rsi, sma
+from src.data.technicals import bollinger, compute_macd, compute_relative_strength, compute_rsi, sma
 from src.portfolio import all_tickers
 from src.ui_helpers import color_legend, section_title, term_glossary
 
 # ── Chart-building helpers ────────────────────────────────────────────────────
 
-def _build_main_figure(ohlcv, sel, show_rsi):
+def _build_main_figure(ohlcv, sel, show_rsi, show_macd=False):
     """Create the subplot figure with correct row heights."""
-    n_rows = 2 + (1 if show_rsi else 0)
-    row_h  = [0.65, 0.15] + ([0.20] if show_rsi else [])
+    extra_h = ([0.20] if show_rsi else []) + ([0.20] if show_macd else [])
+    extra_t = ([HE["rsi_label"]] if show_rsi else []) + (["MACD (12/26/9)"] if show_macd else [])
+    n_rows  = 2 + len(extra_h)
     return make_subplots(
         rows=n_rows, cols=1,
         shared_xaxes=True,
-        row_heights=row_h,
+        row_heights=[0.65, 0.15] + extra_h,
         vertical_spacing=0.03,
-        subplot_titles=["", HE["volume_label"]] + ([HE["rsi_label"]] if show_rsi else []),
+        subplot_titles=["", HE["volume_label"]] + extra_t,
     )
 
 
@@ -95,23 +104,48 @@ def _add_volume(fig, ohlcv):
     ), row=2, col=1)
 
 
-def _add_rsi(fig, ohlcv, close):
+def _add_rsi(fig, ohlcv, close, row=3):
     rsi_series = compute_rsi(close)
     fig.add_trace(go.Scatter(
         x=ohlcv.index, y=rsi_series,
         name="RSI", line={"color": "#FF9800", "width": 1.2},
-    ), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="#F44336", line_width=0.8, row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#4CAF50", line_width=0.8, row=3, col=1)
-    fig.update_yaxes(range=[0, 100], row=3, col=1)
+    ), row=row, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="#F44336", line_width=0.8, row=row, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="#4CAF50", line_width=0.8, row=row, col=1)
+    fig.update_yaxes(range=[0, 100], row=row, col=1)
 
 
-def _apply_chart_layout(fig, sel, show_rsi):
+def _add_macd(fig, ohlcv, close, row):
+    """MACD panel: histogram (green/red) + MACD line + Signal line + zero reference."""
+    macd_line, signal_line, histogram = compute_macd(close)
+    bar_colors = [COLOR["positive"] if v >= 0 else COLOR["negative"] for v in histogram]
+    fig.add_trace(go.Bar(
+        x=ohlcv.index, y=histogram,
+        name="MACD Histogram",
+        marker_color=bar_colors,
+        opacity=0.7,
+        showlegend=True,
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=ohlcv.index, y=macd_line,
+        name="MACD",
+        line={"color": "#2196F3", "width": 1.2},
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=ohlcv.index, y=signal_line,
+        name="Signal",
+        line={"color": "#FF9800", "width": 1.2, "dash": "dot"},
+    ), row=row, col=1)
+    fig.add_hline(y=0, line_dash="solid", line_color="#444444", line_width=0.8, row=row, col=1)
+
+
+def _apply_chart_layout(fig, sel, show_rsi, show_macd=False):
     name_str = TICKER_NAMES.get(sel, sel)
+    n_extra  = (1 if show_rsi else 0) + (1 if show_macd else 0)
     fig.update_layout(
         title={"text": f"{HE['chart_title']}{sel} — {name_str}",
                "font_color": COLOR["text_dim"], "font_size": 13, "x": 0.5},
-        height=600 + (150 if show_rsi else 0),
+        height=600 + n_extra * 150,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#111111",
         font={"color": "#ffffff", "size": 10},
@@ -124,49 +158,230 @@ def _apply_chart_layout(fig, sel, show_rsi):
     fig.update_yaxes(gridcolor="#222222", showgrid=True, zeroline=False)
 
 
+@st.cache_data(ttl=1800)
+def _fetch_benchmark_history(sym):
+    # type: (str) -> Optional[pd.Series]
+    """Fetch 1-year close for a benchmark ETF not in the portfolio (cached 30 min)."""
+    import yfinance as yf
+    try:
+        df = yf.Ticker(sym).history(period="1y", auto_adjust=True)
+        if df is not None and not df.empty:
+            close = df["Close"].dropna()
+            if hasattr(close.index, "tz") and close.index.tz is not None:
+                close.index = close.index.tz_localize(None)
+            return close if not close.empty else None
+    except Exception:
+        pass
+    return None
+
+
 def _render_relative_strength(sel, p, prices):
-    """Render the relative strength vs VOO chart below the main chart."""
-    if sel == "VOO":
+    """RS chart with benchmark selector and dual-line view (primary benchmark + VOO context)."""
+    if sel == "VOO" or is_tase_numeric(sel):
         return
-    voo_p = prices.get("VOO")
-    if not (voo_p and voo_p.get("history") is not None and p.get("history") is not None):
+    if p.get("history") is None:
         return
-    rs = compute_relative_strength(p["history"], voo_p["history"])
-    if rs.empty:
+
+    ticker_history = p["history"]
+
+    # Benchmark selector — auto-defaults to the right sector ETF per ticker
+    bench_options = list(RS_BENCHMARK_LABELS.keys())
+    default_bench = TICKER_BENCHMARK_DEFAULT.get(sel, "VOO")
+    default_idx   = bench_options.index(default_bench) if default_bench in bench_options else 0
+
+    st.markdown('<div dir="rtl">', unsafe_allow_html=True)
+    selected_bench = st.selectbox(
+        HE["rs_benchmark_sel"],
+        options=bench_options,
+        index=default_idx,
+        format_func=lambda s: RS_BENCHMARK_LABELS.get(s, s),
+        key=f"rs_bench_{sel}",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Fetch primary benchmark — prefer already-loaded prices dict (zero cost for VOO)
+    bench_close = None
+    if selected_bench in prices and prices[selected_bench]:
+        bench_close = prices[selected_bench].get("history")
+    if bench_close is None or (hasattr(bench_close, "empty") and bench_close.empty):
+        bench_close = _fetch_benchmark_history(selected_bench)
+    if bench_close is None:
+        st.caption(f"לא ניתן לטעון נתונים עבור {selected_bench}.")
         return
-    rs_fig = go.Figure(go.Scatter(
-        x=rs.index, y=rs,
-        name=HE["rel_strength"],
-        line={"color": COLOR["primary"], "width": 1.5},
+
+    rs_primary = compute_relative_strength(ticker_history, bench_close)
+    if rs_primary.empty:
+        st.caption(f"אין מספיק נתונים להשוואה מול {selected_bench}.")
+        return
+
+    # VOO context line (skip when VOO is already the selected benchmark)
+    rs_voo = None
+    if selected_bench != "VOO":
+        voo_h = None
+        if "VOO" in prices and prices["VOO"]:
+            voo_h = prices["VOO"].get("history")
+        if voo_h is None:
+            voo_h = _fetch_benchmark_history("VOO")
+        if voo_h is not None:
+            rs_tmp = compute_relative_strength(ticker_history, voo_h)
+            rs_voo = rs_tmp if not rs_tmp.empty else None
+
+    rs_fig = go.Figure()
+    rs_fig.add_trace(go.Scatter(
+        x=rs_primary.index, y=rs_primary,
+        name=f"{sel} vs {selected_bench}",
+        line={"color": COLOR["primary"], "width": 2},
         fill="tozeroy",
         fillcolor="rgba(0,207,141,0.08)",
     ))
+    if rs_voo is not None:
+        rs_fig.add_trace(go.Scatter(
+            x=rs_voo.index, y=rs_voo,
+            name=f"{sel} {HE['rs_vs_voo_ctx']}",
+            line={"color": "#9E9E9E", "width": 1.2, "dash": "dot"},
+        ))
     rs_fig.add_hline(y=100, line_dash="dash", line_color="#555", line_width=0.8)
     rs_fig.update_layout(
-        title={"text": f"{HE['rel_strength']} — {sel} vs VOO",
+        title={"text": f"חוזק יחסי — {sel} vs {selected_bench}",
                "font_color": COLOR["text_dim"], "font_size": 12, "x": 0.5},
-        height=180,
+        height=200,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#111111",
         font={"color": "#ffffff", "size": 10},
         margin={"t": 30, "b": 10, "l": 10, "r": 10},
-        showlegend=False,
-        hovermode="x",
+        showlegend=(rs_voo is not None),
+        legend={"orientation": "h", "y": 1.08, "font": {"size": 9}},
+        hovermode="x unified",
     )
     rs_fig.update_xaxes(gridcolor="#222222")
     rs_fig.update_yaxes(gridcolor="#222222")
     st.plotly_chart(rs_fig, use_container_width=True)
-    term_glossary([
-        ("חוזק יחסי vs VOO",
-         "הנייר מחושב מחדש ל-100 ביום הראשון בגרף. ערך מעל 100 = ביצועי יתר מול ה-S&P 500. מתחת 100 = פיגור."),
-        ("VOO",
-         "Vanguard S&P 500 ETF — מדד הייחוס לתיק זה, עוקב אחרי 500 החברות הגדולות בארה\"ב."),
-    ], label="📖 מקרא — חוזק יחסי")
+
+    glossary = [
+        ("חוזק יחסי",
+         "הנייר מחושב מחדש ל-100 ביום הראשון. ערך מעל 100 = ביצועי יתר מול הבנצ'מרק. מתחת 100 = פיגור."),
+        (RS_BENCHMARK_LABELS.get(selected_bench, selected_bench),
+         f"הבנצ'מרק הנבחר ({selected_bench})."),
+    ]
+    if rs_voo is not None:
+        glossary.append(("VOO (הקשר)", "קו מקווקו אפור — השוואה נוספת מול S&P 500 הרחב."))
+    term_glossary(glossary, label="📖 מקרא — חוזק יחסי")
+
+
+# ── Per-ticker analyst panel (session / timing / consensus) ──────────────────
+
+def _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key):
+    from src.tabs.analysis_tab import _render_ticker_section
+    from src.tabs.analysts_tab import (
+        _build_session_prompt,
+        _build_timing_data_str,
+        _compute_buy_signal,
+        _render_consensus_table,
+        _render_score_bar,
+        _render_signal_chips,
+        _render_target_chart,
+        _render_timing_ai_card,
+        _run_buy_timing_eval,
+        _run_session_analysis,
+    )
+    from src.tabs.news_tab import _render_articles, _render_company_brief, _render_today_summary
+    from src.tabs.red_flags import get_all_flag_statuses
+
+    prices       = data["prices"]
+    targets      = data["targets"]
+    consensus    = data["consensus"]
+    fundamentals = data.get("fundamentals", {})
+    news         = data.get("news", {})
+    tickers      = sorted(all_tickers(portfolio))
+
+    st.divider()
+    st.markdown(
+        f'<div dir="rtl" style="font-size:14px;font-weight:700;color:#00cf8d;margin-bottom:8px">'
+        f'📊 ניתוח — {sel}</div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_session, tab_timing, tab_consensus, tab_analysis, tab_news = st.tabs([
+        "📋 ניתוח יומי", "⏰ תזמון קנייה", "👥 קונצנזוס", "🔬 5 פילטרים", "📰 חדשות"
+    ])
+
+    with tab_session:
+        if not claude_api_key:
+            st.caption("🤖 הוסף CLAUDE_API_KEY לקובץ secrets.toml לקבלת ניתוח סשן AI")
+        else:
+            prompt_body = _build_session_prompt(tickers, data)
+            tickers_key = ",".join(tickers)
+            with st.spinner("🤖 AI מנתח את הסשן..."):
+                result = _run_session_analysis(tickers_key, prompt_body, td_str, claude_api_key)
+            if "_error" in result:
+                st.warning(f"⚠️ {result['_error']}")
+            else:
+                stocks = result.get("stocks") or []
+                entry  = next((s for s in stocks if s.get("ticker") == sel), None)
+                if entry:
+                    priority = entry.get("priority", "Low")
+                    P_COLOR  = {"High": "#00cf8d", "Medium": "#ff9800", "Low": "#888888"}
+                    P_HE     = {"High": "גבוהה", "Medium": "בינונית", "Low": "נמוכה"}
+                    pc = P_COLOR.get(priority, "#888888")
+                    st.markdown(
+                        f'<div dir="rtl" style="background:#0d1117;border:1px solid #1f2937;'
+                        f'border-radius:8px;padding:14px 16px;font-size:12px;line-height:2.0">'
+                        f'<div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:8px">'
+                        f'{sel}&nbsp;<span style="color:{pc};font-size:11px">● עדיפות {P_HE.get(priority, priority)}</span></div>'
+                        f'<div><span style="color:#888">קטליזטור:</span> {entry.get("catalyst", "—")}</div>'
+                        f'<div><span style="color:#888">תנועת מחיר:</span> {entry.get("premarket", "—")}</div>'
+                        f'<div style="font-family:monospace"><span style="color:#888">מפתחות:</span> {entry.get("levels", "—")}</div>'
+                        f'<div><span style="color:#888">סטאפ:</span> {entry.get("setup", "—")}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    ctx = result.get("market_context", "")
+                    if ctx:
+                        st.caption(f"🌍 {ctx}")
+                else:
+                    st.caption(f"אין נתוני סשן עבור {sel}")
+
+    with tab_timing:
+        all_flags = get_all_flag_statuses(portfolio, data)
+        sig = _compute_buy_signal(sel, data, all_flags)
+        _render_score_bar(sig["score"], f"ציון תזמון קנייה — {sel}")
+        _render_signal_chips(sig)
+        if claude_api_key:
+            data_str = _build_timing_data_str(sel, sig)
+            with st.spinner("🤖 AI מעריך תזמון..."):
+                verdict = _run_buy_timing_eval(sel, data_str, td_str, claude_api_key)
+            _render_timing_ai_card(verdict, sel, data_str, td_str, claude_api_key)
+
+    with tab_consensus:
+        _render_consensus_table([sel], consensus, prices)
+        _render_target_chart([sel], prices, targets)
+
+    with tab_analysis:
+        name = TICKER_NAMES.get(sel) or (prices.get(sel) or {}).get("name", sel)
+        _render_ticker_section(
+            ticker=sel,
+            name=name,
+            theme="",
+            p=prices.get(sel),
+            con=consensus.get(sel) or {},
+            tgt=targets.get(sel),
+            fun=fundamentals.get(sel) or None,
+            td_str=td_str,
+            claude_api_key=claude_api_key,
+            expanded=True,
+        )
+
+    with tab_news:
+        _render_today_summary(sel, news, td_str, claude_api_key)
+        st.divider()
+        _render_company_brief(sel, td_str)
+        st.divider()
+        _render_articles(sel, news)
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def render_charts(portfolio, data):
+def render_charts(portfolio, data, td_str="", claude_api_key=""):
     prices  = data["prices"]
     targets = data["targets"]
 
@@ -175,84 +390,157 @@ def render_charts(portfolio, data):
         st.info("הוסף ניירות ערך לתיק כדי לראות גרפים.")
         return
 
-    # ── Controls row ─────────────────────────────────────────────────────
-    st.markdown('<div dir="rtl">', unsafe_allow_html=True)
-    col1, col2 = st.columns([2, 5])
-    with col1:
-        sel = st.selectbox("בחר מניה", tickers, key="chart_sel",
-                           format_func=lambda t: f"{t} — {TICKER_NAMES.get(t, '')}")
-    with col2:
-        c1, c2, c3, c4, c5 = st.columns(5)
+    # ── Session state: persist ticker selection across reruns ─────────────
+    if "chart_sel" not in st.session_state or st.session_state.chart_sel not in tickers:
+        st.session_state.chart_sel = tickers[0]
+
+    # Compact style for ticker nav buttons inside the scrollable container
+    st.markdown(
+        """<style>
+        [data-testid="stVerticalBlockBorderWrapper"] button {
+            font-size: 11px !important;
+            padding: 2px 6px !important;
+            min-height: 28px !important;
+            height: auto !important;
+            line-height: 1.3 !important;
+        }
+        [data-testid="stVerticalBlockBorderWrapper"] button p {
+            white-space: pre-line !important;
+            font-size: 11px !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
+    nav_open = not st.session_state.get("chart_nav_collapsed", False)
+    main_col, right_col = st.columns([4, 1]) if nav_open else st.columns([19, 1])
+
+    sel = st.session_state.chart_sel
+
+    with right_col:
+        # ── Collapse / expand toggle ──────────────────────────────────────
+        toggle_icon = "▶" if nav_open else "◀"
+        if st.button(toggle_icon, key="chart_nav_toggle",
+                     help="הסתר/הצג רשימת ניירות ערך", use_container_width=True):
+            st.session_state.chart_nav_collapsed = nav_open
+            st.rerun()
+
+        if nav_open:
+            sel_name = TICKER_NAMES.get(sel) or (prices.get(sel) or {}).get("name", "")
+            st.markdown(
+                f'<div style="font-size:10px;font-weight:700;color:#888;margin-bottom:2px">ניירות ערך</div>'
+                f'<div style="font-size:10px;color:#00cf8d;margin-bottom:6px;line-height:1.4">'
+                f'{sel_name or sel}</div>',
+                unsafe_allow_html=True,
+            )
+            with st.container(height=840, border=False):
+                for t in tickers:
+                    btn_type = "primary" if st.session_state.chart_sel == t else "secondary"
+                    name = TICKER_NAMES.get(t) or (prices.get(t) or {}).get("name", "")
+                    if name and len(name) > 18:
+                        name = name[:17] + "…"
+                    label = f"{t}\n{name}" if name else t
+                    if st.button(label, key=f"chart_btn_{t}", type=btn_type,
+                                 use_container_width=True):
+                        st.session_state.chart_sel = t
+                        st.rerun()
+
+    with main_col:
+        # ── Indicator checkboxes ──────────────────────────────────────────
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         show_sma20  = c1.checkbox("SMA 20",    value=False, key="ch_sma20")
         show_sma50  = c2.checkbox("SMA 50",    value=True,  key="ch_sma50")
         show_sma200 = c3.checkbox("SMA 200",   value=True,  key="ch_sma200")
         show_boll   = c4.checkbox("Bollinger", value=False, key="ch_boll")
         show_rsi    = c5.checkbox("RSI",       value=True,  key="ch_rsi")
-    st.markdown('</div>', unsafe_allow_html=True)
+        show_macd   = c6.checkbox("MACD",      value=False, key="ch_macd")
 
-    p = prices.get(sel)
-    if not p or p.get("ohlcv") is None or p["ohlcv"].empty:
-        err    = prices.get("__errors__", {}).get(sel, "")
-        detail = f" — {err}" if err else ""
-        st.warning(f"אין נתוני OHLCV עבור {sel}{detail}. נסה לרענן (כפתור בסרגל הצד).")
-        return
+        p = prices.get(sel)
+        if not p or p.get("ohlcv") is None or p["ohlcv"].empty:
+            err    = prices.get("__errors__", {}).get(sel, "")
+            detail = f" — {err}" if err else ""
+            st.warning(f"אין נתוני OHLCV עבור {sel}{detail}. נסה לרענן (כפתור בסרגל הצד).")
+            return
 
-    ohlcv = p["ohlcv"]
-    close = ohlcv["Close"]
-    tgt   = targets.get(sel)
+        ohlcv = p["ohlcv"]
+        close = ohlcv["Close"]
+        tgt   = targets.get(sel)
 
-    # ── Build figure ─────────────────────────────────────────────────────
-    fig = _build_main_figure(ohlcv, sel, show_rsi)
-    _add_candlestick(fig, ohlcv, sel)
-    _add_moving_averages(fig, ohlcv, close, show_sma20, show_sma50, show_sma200)
-    if show_boll:
-        _add_bollinger(fig, ohlcv, close)
-    _add_reference_lines(fig, p, tgt)
-    _add_volume(fig, ohlcv)
-    if show_rsi:
-        _add_rsi(fig, ohlcv, close)
-    _apply_chart_layout(fig, sel, show_rsi)
+        # ── Build figure ──────────────────────────────────────────────────
+        fig = _build_main_figure(ohlcv, sel, show_rsi, show_macd)
+        _add_candlestick(fig, ohlcv, sel)
+        _add_moving_averages(fig, ohlcv, close, show_sma20, show_sma50, show_sma200)
+        if show_boll:
+            _add_bollinger(fig, ohlcv, close)
+        _add_reference_lines(fig, p, tgt)
+        _add_volume(fig, ohlcv)
+        next_row = 3
+        if show_rsi:
+            _add_rsi(fig, ohlcv, close, row=next_row)
+            next_row += 1
+        if show_macd:
+            _add_macd(fig, ohlcv, close, row=next_row)
+        _apply_chart_layout(fig, sel, show_rsi, show_macd)
 
-    st.plotly_chart(fig, use_container_width=True)
-    color_legend([
-        (COLOR["positive"],  "נר ירוק — סגירה גבוהה מפתיחה (עלייה)"),
-        (COLOR["negative"],  "נר אדום — סגירה נמוכה מפתיחה (ירידה)"),
-        ("#AB47BC",          "SMA 20 — ממוצע נע 20 יום"),
-        ("#42A5F5",          "SMA 50 — ממוצע נע 50 יום"),
-        ("#FF7043",          "SMA 200 — ממוצע נע 200 יום"),
-        ("#78909C",          "Bollinger Bands"),
-        ("#4CAF50",          "שיא 52 שבוע (52W High)"),
-        ("#F44336",          "שפל 52 שבוע (52W Low)"),
-        (COLOR["primary"],   "יעד מחיר ממוצע (אנליסטים)"),
-        ("#FF9800",          "RSI(14)"),
-    ])
-    term_glossary([
-        ("נר יפני (Candlestick)",
-         "כל נר מייצג יום מסחר: גוף = טווח פתיחה-סגירה, שפם = שיא ושפל יומי."),
-        ("SMA 20",
-         "Simple Moving Average — ממוצע מחירי הסגירה של 20 הימים האחרונים. מגיב מהר לשינויים."),
-        ("SMA 50",
-         "ממוצע נע 50 יום — קו תמיכה/התנגדות לטווח בינוני. פופולרי אצל טריידרים מוסדיים."),
-        ("SMA 200",
-         "ממוצע נע 200 יום — מגמה ארוכת טווח. מחיר מעל SMA200 = מגמת עלייה, מתחת = ירידה."),
-        ("Bollinger Bands",
-         "שני פסים הרחוקים 2 סטיות תקן מ-SMA20. רוחב פס גדול = תנודתיות גבוהה. מחיר בפס עליון = overbought."),
-        ("RSI(14)",
-         "Relative Strength Index — מדד תנע בין 0–100. מעל 70 = קנוי-יתר (ירידה אפשרית), מתחת 30 = מכור-יתר (עלייה אפשרית)."),
-        ("52W High / Low",
-         "שיא ושפל המחיר ב-52 השבועות האחרונים — נקודות מפתח פסיכולוגיות לתמיכה/התנגדות."),
-        ("יעד אנליסטים",
-         "ממוצע יעדי המחיר של כל האנליסטים המכסים את הנייר — קו ירוק מקווקו."),
-        ("Volume (נפח)",
-         "מספר המניות שנסחרו ביום. נפח גבוה + תנועת מחיר חזקה = אישור מגמה."),
-    ])
+        st.plotly_chart(fig, use_container_width=True)
+        legend_items = [
+            (COLOR["positive"],  "נר ירוק — סגירה גבוהה מפתיחה (עלייה)"),
+            (COLOR["negative"],  "נר אדום — סגירה נמוכה מפתיחה (ירידה)"),
+            ("#AB47BC",          "SMA 20 — ממוצע נע 20 יום"),
+            ("#42A5F5",          "SMA 50 — ממוצע נע 50 יום"),
+            ("#FF7043",          "SMA 200 — ממוצע נע 200 יום"),
+            ("#78909C",          "Bollinger Bands"),
+            ("#4CAF50",          "שיא 52 שבוע (52W High)"),
+            ("#F44336",          "שפל 52 שבוע (52W Low)"),
+            (COLOR["primary"],   "יעד מחיר ממוצע (אנליסטים)"),
+            ("#FF9800",          "RSI(14)"),
+        ]
+        if show_macd:
+            legend_items += [
+                ("#2196F3",         "MACD Line (EMA12 - EMA26)"),
+                ("#FF9800",         "Signal Line (EMA9 של MACD)"),
+                (COLOR["positive"], "MACD Histogram חיובי (מומנטום עולה)"),
+                (COLOR["negative"], "MACD Histogram שלילי (מומנטום יורד)"),
+            ]
+        color_legend(legend_items)
+        glossary_terms = [
+            ("נר יפני (Candlestick)",
+             "כל נר מייצג יום מסחר: גוף = טווח פתיחה-סגירה, שפם = שיא ושפל יומי."),
+            ("SMA 20",
+             "Simple Moving Average — ממוצע מחירי הסגירה של 20 הימים האחרונים. מגיב מהר לשינויים."),
+            ("SMA 50",
+             "ממוצע נע 50 יום — קו תמיכה/התנגדות לטווח בינוני. פופולרי אצל טריידרים מוסדיים."),
+            ("SMA 200",
+             "ממוצע נע 200 יום — מגמה ארוכת טווח. מחיר מעל SMA200 = מגמת עלייה, מתחת = ירידה."),
+            ("Bollinger Bands",
+             "שני פסים הרחוקים 2 סטיות תקן מ-SMA20. רוחב פס גדול = תנודתיות גבוהה. מחיר בפס עליון = overbought."),
+            ("RSI(14)",
+             "Relative Strength Index — מדד תנע בין 0–100. מעל 70 = קנוי-יתר (ירידה אפשרית), מתחת 30 = מכור-יתר (עלייה אפשרית)."),
+            ("52W High / Low",
+             "שיא ושפל המחיר ב-52 השבועות האחרונים — נקודות מפתח פסיכולוגיות לתמיכה/התנגדות."),
+            ("יעד אנליסטים",
+             "ממוצע יעדי המחיר של כל האנליסטים המכסים את הנייר — קו ירוק מקווקו."),
+            ("Volume (נפח)",
+             "מספר המניות שנסחרו ביום. נפח גבוה + תנועת מחיר חזקה = אישור מגמה."),
+        ]
+        if show_macd:
+            glossary_terms.append((
+                "MACD (12/26/9)",
+                "Moving Average Convergence Divergence — EMA12 פחות EMA26. "
+                "חציית ה-Signal Line מלמטה = מומנטום חיובי (אות קנייה). "
+                "היסטוגרם ירוק = תנע עולה, אדום = יורד.",
+            ))
+        term_glossary(glossary_terms)
 
-    _render_relative_strength(sel, p, prices)
-    _render_orb_chart(sel)
-    st.divider()
-    _render_monte_carlo_section(sel, prices, targets)
-    st.divider()
-    _render_trailing_stop_section(sel, prices)
+        _render_relative_strength(sel, p, prices)
+        _render_orb_chart(sel)
+        st.divider()
+        _render_monte_carlo_section(sel, prices, targets)
+        st.divider()
+        _render_trailing_stop_section(sel, prices)
+
+        if not is_tase_numeric(sel):
+            _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key)
 
 
 # ── ORB: Opening Range Breakout (Python / Plotly) ─────────────────────────────
@@ -835,7 +1123,6 @@ def _compute_trailing_stop(
                 in_trade    = True
                 stop        = n_low
                 stop_moved  = False
-                entry_price = close_i
                 entry_arr[i] = True
         else:
             if high_i > n_high:
@@ -861,8 +1148,8 @@ def _compute_trailing_stop(
 
 def _trailing_stop_stats(df: "pd.DataFrame") -> dict:
     """Compute completed trade P&L statistics from trailing stop simulation."""
-    entry_rows = df[df["_entry"] == True]
-    exit_rows  = df[df["_exit"]  == True]
+    entry_rows = df[df["_entry"]]
+    exit_rows  = df[df["_exit"]]
     entry_idx  = entry_rows.index.tolist()
     exit_idx   = exit_rows.index.tolist()
 
@@ -950,7 +1237,7 @@ def _build_trailing_stop_figure(
             connectgaps=False,
         ))
 
-    entries = df[df["_entry"] == True]
+    entries = df[df["_entry"]]
     if not entries.empty:
         fig.add_trace(go.Scatter(
             x=entries.index,
@@ -964,7 +1251,7 @@ def _build_trailing_stop_figure(
             },
         ))
 
-    exits = df[df["_exit"] == True]
+    exits = df[df["_exit"]]
     if not exits.empty:
         fig.add_trace(go.Scatter(
             x=exits.index,

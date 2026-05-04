@@ -23,7 +23,7 @@ import requests as _req
 import streamlit as st
 import yfinance as yf
 
-from src.config import is_tase_numeric
+from src.config import is_tase_numeric, tase_yf_symbol
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -358,8 +358,8 @@ def get_current_price_or_daily_avg(ticker, buy_date, prices_dict):
                 today_rows = ohlcv[mask]
                 if not today_rows.empty:
                     h = float(today_rows["High"].iloc[-1])
-                    l = float(today_rows["Low"].iloc[-1])
-                    return round((h + l) / 2, 4)
+                    lo = float(today_rows["Low"].iloc[-1])
+                    return round((h + lo) / 2, 4)
             except Exception:
                 pass
         if p.get("price"):
