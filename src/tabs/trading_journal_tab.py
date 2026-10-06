@@ -19,26 +19,75 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from src.config import COLOR
+from src.config import COLOR, is_tase_numeric
 from src.data.prices import lookup_buy_price
+from src.portfolio import save_portfolio, update_lot
 from src.ui_helpers import color_legend, section_title, term_glossary
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # CSV column-name normalization: canonical name → accepted raw variants (case-insensitive)
 _COL_MAP: Dict[str, List[str]] = {
-    "symbol":      ["symbol", "ticker", "stock"],
-    "entry_date":  ["entry date", "open date", "date opened", "trade date", "date"],
-    "entry_time":  ["entry time", "open time", "time opened"],
-    "entry_price": ["entry price", "open price", "avg entry", "buy price"],
-    "exit_date":   ["exit date", "close date", "date closed"],
-    "exit_time":   ["exit time", "close time", "time closed"],
-    "exit_price":  ["exit price", "close price", "avg exit", "sell price"],
-    "shares":      ["shares", "qty", "quantity", "size", "units"],
-    "pnl":         ["p&l", "pnl", "realized p&l", "net p&l",
-                    "gain/loss", "profit/loss", "net amount"],
-    "setup_type":  ["setup type", "setup", "strategy", "pattern"],
+    "symbol": [
+        "symbol", "ticker", "stock",
+        "סימול", "סימול המניה", "שם נייר", "נייר ערך", "מניה", "שם", 'ני"ע', "קוד נייר", "נייר",
+    ],
+    "entry_date": [
+        "entry date", "open date", "date opened", "trade date", "date",
+        "תאריך", "תאריך ביצוע", "תאריך עסקה", "תאריך קנייה", "תאריך כניסה",
+        "תאריך פקודה", "תאריך ערך", "תאריך פתיחה",
+    ],
+    "entry_time": [
+        "entry time", "open time", "time opened",
+        "שעת ביצוע", "שעת כניסה", "שעה",
+    ],
+    "entry_price": [
+        "entry price", "open price", "avg entry", "buy price",
+        "מחיר", "שער", "מחיר ביצוע", "מחיר קנייה", "מחיר כניסה", "שער ביצוע", "שער קנייה",
+    ],
+    "exit_date": [
+        "exit date", "close date", "date closed",
+        "תאריך מכירה", "תאריך יציאה", "תאריך סגירה", "תאריך סיום",
+    ],
+    "exit_time": [
+        "exit time", "close time", "time closed",
+        "שעת מכירה", "שעת יציאה", "שעת סגירה",
+    ],
+    "exit_price": [
+        "exit price", "close price", "avg exit", "sell price",
+        "מחיר מכירה", "מחיר יציאה", "מחיר סגירה", "שער מכירה", "שער יציאה",
+    ],
+    "shares": [
+        "shares", "qty", "quantity", "size", "units",
+        "כמות", "מניות", "יחידות", "נפח", "מס' מניות", "כמות מניות",
+    ],
+    "pnl": [
+        "p&l", "pnl", "realized p&l", "net p&l", "gain/loss", "profit/loss", "net amount",
+        "רווח/הפסד", "רווח / הפסד", "רווח והפסד", "תוצאה", "שווי נטו",
+        "רווח", "ריווח", "הפסד", "נטו", "סכום נטו",
+    ],
+    "setup_type": [
+        "setup type", "setup", "strategy", "pattern",
+        "סוג עסקה", "אסטרטגיה", "סטאפ", "סוג",
+    ],
+    # Transaction-log specific columns (one row per order)
+    "action_type": [
+        "action", "type", "transaction type", "order type", "side",
+        "סוג פעולה", "פעולה", "סוג הוראה", "סוג עסקה", "כיוון",
+    ],
+    "value": [
+        "value", "amount", "total", "gross amount",
+        "שווי", "סכום", "ערך", 'סה"כ', "שווי ביצוע",
+    ],
+    "commission": [
+        "commission", "fee", "fees", "brokerage",
+        "עמלה", "דמי ניהול", "עמלת ביצוע",
+    ],
 }
+
+# Keywords that classify a transaction as buy or sell
+_BUY_KEYWORDS  = {"קנייה", "קנ", "buy", "purchase", "long"}
+_SELL_KEYWORDS = {"מכירה", "מכ", "sell", "sel", "sale", "short"}
 
 # Hebrew weekday labels: Monday=0 … Friday=4 (pandas .weekday() convention)
 _DOW_LABELS: Dict[int, str] = {
@@ -60,6 +109,58 @@ _TIME_BLOCKS = [
     ("14:30–16:00", datetime.time(14, 30), datetime.time(16, 0)),
 ]
 _TIME_BLOCK_ORDER = [b[0] for b in _TIME_BLOCKS]
+
+
+# ── Source C: portfolio trade_history (closed/sold lots) ─────────────────────
+
+def _history_to_closed_trades(portfolio: dict) -> pd.DataFrame:
+    """Build a trades DataFrame from sell events in portfolio trade_history."""
+    history = portfolio.get("trade_history", [])
+    rows: List[Dict[str, Any]] = []
+    for entry in history:
+        if entry.get("action") != "sell":
+            continue
+        sell_price = entry.get("price")
+        buy_price  = entry.get("buy_price")
+        shares     = float(entry.get("shares") or 0)
+        pnl        = entry.get("pnl")
+        if pnl is None and buy_price is not None and sell_price is not None:
+            pnl = round((float(sell_price) - float(buy_price)) * shares, 2)
+        if pnl is None:
+            continue
+
+        buy_date_str  = entry.get("buy_date")
+        sell_date_str = entry.get("date")
+        sell_date_obj: Optional[datetime.date] = None
+        buy_date_obj:  Optional[datetime.date] = None
+        try:
+            if sell_date_str:
+                sell_date_obj = datetime.date.fromisoformat(sell_date_str)
+            if buy_date_str:
+                buy_date_obj = datetime.date.fromisoformat(buy_date_str)
+        except (ValueError, TypeError):
+            pass
+
+        rows.append({
+            "symbol":            entry.get("ticker", ""),
+            "entry_date":        buy_date_str,
+            "exit_date":         sell_date_str,
+            "entry_date_parsed": buy_date_obj,
+            "entry_price":       buy_price,
+            "exit_price":        sell_price,
+            "shares":            shares,
+            "pnl":               round(pnl, 2),
+            "layer":             entry.get("layer"),
+            "source":            "history",
+            "is_win":            pnl > 0,
+            "day_of_week": (
+                _DOW_LABELS.get(sell_date_obj.weekday())
+                if sell_date_obj else None
+            ),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 
 # ── Source A: portfolio lots ───────────────────────────────────────────────────
@@ -149,6 +250,141 @@ def _parse_time(val: Any) -> Optional[datetime.time]:
     return None
 
 
+def _classify_action(val: Any) -> str:
+    """Classify an action-type cell as 'buy', 'sell', or 'other'."""
+    s = str(val).strip().lower()
+    if any(k in s for k in _BUY_KEYWORDS):
+        return "buy"
+    if any(k in s for k in _SELL_KEYWORDS):
+        return "sell"
+    return "other"
+
+
+def _to_num(series: "pd.Series") -> "pd.Series":
+    """Strip currency/comma formatting and coerce to float."""
+    return pd.to_numeric(
+        series.astype(str).str.replace(r"[^\d.\-]", "", regex=True),
+        errors="coerce",
+    )
+
+
+def _parse_transaction_csv(df: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Handle transaction-log CSVs (one row per buy/sell order).
+
+    Returns ONE ROW PER SYMBOL with:
+      - realized_pnl  : sum of broker-reported P&L across all sells for that symbol
+      - remaining_shares / avg_buy_price : for positions still open (unrealized P&L
+        is added later in render_trading_journal() using current market prices)
+      - status        : 'פתוח' (open) | 'סגור' (closed)
+
+    Win/loss is therefore per-position, not per individual trade order.
+    """
+    df["_action"] = df["action_type"].apply(_classify_action)
+
+    orders = df[df["_action"].isin(["buy", "sell"])].copy()
+    if orders.empty:
+        found = df["action_type"].dropna().unique()[:8].tolist()
+        raise ValueError(
+            f"לא זוהו פעולות קנייה/מכירה. ערכי עמודת הפעולה שנמצאו: {found}. "
+            "הפקודה צריכה להכיל 'BUY', 'SEL'/'SELL', 'קנייה', 'מכירה' וכד'."
+        )
+
+    # Numeric quantities
+    orders["_qty"] = _to_num(orders["shares"]).abs() if "shares" in orders.columns else 0.0
+    orders["_price"] = _to_num(orders["entry_price"]).abs() if "entry_price" in orders.columns else 0.0
+
+    # Per-row P&L (broker-computed, present in column G of the sample CSV)
+    has_pnl_col = "pnl" in orders.columns
+    if has_pnl_col:
+        orders["_row_pnl"] = (
+            orders["pnl"]
+            .astype(str)
+            .str.replace(r"[₪\$,\s]", "", regex=True)
+            .pipe(pd.to_numeric, errors="coerce")
+            .fillna(0.0)
+        )
+    else:
+        orders["_row_pnl"] = 0.0
+
+    # Parse datetimes (format "MM/DD/YYYY HH:MM:SS TZ")
+    if "entry_date" in orders.columns:
+        orders["_dt"] = pd.to_datetime(orders["entry_date"], errors="coerce")
+    else:
+        orders["_dt"] = pd.NaT
+
+    # Group by symbol — one output row per symbol
+    sym_col = "symbol" if "symbol" in orders.columns else None
+    groups  = orders.groupby(sym_col, sort=False) if sym_col else [("?", orders)]
+
+    rows: List[Dict[str, Any]] = []
+    for ticker, g in groups:
+        # Skip rows with no symbol (e.g. CAS cash entries)
+        if not ticker or (isinstance(ticker, float) and pd.isna(ticker)):
+            continue
+
+        buys  = g[g["_action"] == "buy"]
+        sells = g[g["_action"] == "sell"]
+
+        buy_qty   = buys["_qty"].sum()
+        sell_qty  = sells["_qty"].sum()
+        remaining = max(0.0, buy_qty - sell_qty)
+
+        # Avg buy price = total cost / total shares bought
+        buy_cost      = (buys["_qty"] * buys["_price"]).sum()
+        avg_buy_price = (buy_cost / buy_qty) if buy_qty > 0 else 0.0
+
+        # Realized P&L — prefer broker-computed column; fall back to value difference
+        if has_pnl_col:
+            realized_pnl = sells["_row_pnl"].sum()
+        else:
+            sell_proceeds = (sells["_qty"] * sells["_price"]).sum()
+            cost_of_sold  = avg_buy_price * sell_qty
+            realized_pnl  = sell_proceeds - cost_of_sold
+
+        # Dates
+        buy_dts  = buys["_dt"].dropna()
+        sell_dts = sells["_dt"].dropna()
+        first_buy_dt  = buy_dts.min()  if len(buy_dts)  > 0 else pd.NaT
+        last_sell_dt  = sell_dts.max() if len(sell_dts) > 0 else pd.NaT
+
+        entry_date_str = str(first_buy_dt.date())  if not pd.isna(first_buy_dt)  else None
+        exit_date_str  = str(last_sell_dt.date())  if not pd.isna(last_sell_dt)  else None
+        entry_date_obj = first_buy_dt.date()        if not pd.isna(first_buy_dt)  else None
+
+        # Time block from the most recent sell (for journal time analysis)
+        time_block = "אחר"
+        if len(sell_dts) > 0:
+            time_block = _assign_time_block(sell_dts.max().time())
+
+        status = "פתוח" if remaining > 0.001 else "סגור"
+
+        # pnl starts as realized; render_trading_journal() adds unrealized for open positions
+        rows.append({
+            "symbol":           str(ticker),
+            "entry_date":       entry_date_str,
+            "exit_date":        exit_date_str if status == "סגור" else None,
+            "entry_date_parsed": entry_date_obj,
+            "shares":           round(buy_qty,        3),
+            "remaining_shares": round(remaining,      3),
+            "avg_buy_price":    round(avg_buy_price,  4),
+            "realized_pnl":     round(realized_pnl,   2),
+            "pnl":              round(realized_pnl,   2),  # updated live for open positions
+            "status":           status,
+            "time_block":       time_block,
+            "source":           "csv",
+            "is_win":           realized_pnl > 0,
+            "day_of_week":      (
+                _DOW_LABELS.get(entry_date_obj.weekday())
+                if isinstance(entry_date_obj, datetime.date) else None
+            ),
+        })
+
+    if not rows:
+        raise ValueError("לא נמצאו עסקאות קנייה/מכירה בקובץ.")
+
+    return pd.DataFrame(rows)
+
+
 def _parse_csv_trades(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalize CSV columns and build a clean trades DataFrame (Source B).
@@ -156,17 +392,41 @@ def _parse_csv_trades(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     df = _normalize_columns(raw_df.copy())
 
-    if "pnl" not in df.columns:
-        raise ValueError(
-            "לא נמצאה עמודת P&L בקובץ. "
-            "ודא שהקובץ מכיל עמודה בשם: p&l, pnl, realized p&l, gain/loss, או profit/loss."
-        )
+    # ── Transaction-log format: one row per order (buy / sell) ───────────────
+    if "action_type" in df.columns:
+        return _parse_transaction_csv(df, raw_df)
 
-    # Coerce pnl: strip currency formatting before numeric conversion
+    if "pnl" not in df.columns:
+        # Fallback: compute pnl from entry/exit prices × shares
+        has_prices = "exit_price" in df.columns and "entry_price" in df.columns
+        has_shares = "shares" in df.columns
+        if has_prices and has_shares:
+            df["pnl"] = (
+                pd.to_numeric(
+                    df["exit_price"].astype(str).str.replace(r"[^\d.\-]", "", regex=True),
+                    errors="coerce",
+                ) -
+                pd.to_numeric(
+                    df["entry_price"].astype(str).str.replace(r"[^\d.\-]", "", regex=True),
+                    errors="coerce",
+                )
+            ) * pd.to_numeric(
+                df["shares"].astype(str).str.replace(r"[^\d.\-]", "", regex=True),
+                errors="coerce",
+            )
+        else:
+            found_cols = ", ".join(raw_df.columns[:12].tolist())
+            raise ValueError(
+                "לא נמצאה עמודת P&L בקובץ. "
+                f"עמודות שנמצאו: {found_cols}. "
+                "ודא שהקובץ מכיל עמודה בשם: p&l / pnl / רווח/הפסד / gain/loss."
+            )
+
+    # Coerce pnl: strip currency symbols and formatting before numeric conversion
     df["pnl"] = (
         df["pnl"]
         .astype(str)
-        .str.replace(r"[\$,\s]", "", regex=True)
+        .str.replace(r"[₪\$,\s]", "", regex=True)
         .pipe(pd.to_numeric, errors="coerce")
     )
     df = df.dropna(subset=["pnl"])
@@ -176,9 +436,11 @@ def _parse_csv_trades(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["is_win"] = df["pnl"] > 0
     df["source"] = "csv"
 
-    # Parse entry_date
+    # Parse entry_date — dayfirst=True handles DD/MM/YYYY common in Israeli exports
     if "entry_date" in df.columns:
-        df["entry_date_parsed"] = pd.to_datetime(df["entry_date"], errors="coerce").dt.date
+        df["entry_date_parsed"] = pd.to_datetime(
+            df["entry_date"], errors="coerce", dayfirst=True
+        ).dt.date
         df["day_of_week"] = df["entry_date_parsed"].apply(
             lambda d: _DOW_LABELS.get(d.weekday()) if isinstance(d, datetime.date) else None
         )
@@ -247,9 +509,11 @@ def _group_stats(g: pd.DataFrame) -> Dict[str, Any]:
 
 
 def _compute_by_layer(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """Breakdown by portfolio layer (Source A trades only)."""
-    sub = df[df["source"] == "portfolio"]
-    if sub.empty or "layer" not in sub.columns:
+    """Breakdown by portfolio layer (open lots + closed history trades)."""
+    if "layer" not in df.columns or "source" not in df.columns:
+        return None
+    sub = df[df["source"].isin(["portfolio", "history"]) & df["layer"].notna()]
+    if sub.empty:
         return None
     rows = []
     for layer, g in sub.groupby("layer"):
@@ -438,18 +702,23 @@ def _render_upload_hint() -> None:
     with st.expander("📋 אילו עמודות נדרשות ב-CSV?", expanded=False):
         st.markdown(
             '<div dir="rtl" style="font-size:11px;color:#aaa;line-height:1.9">'
-            '<b style="color:#00cf8d">חובה:</b> עמודת P&L (p&l / pnl / realized p&l / gain/loss / profit/loss / net amount)<br>'
-            '<b style="color:#aaa">אופציונלי:</b>'
-            '<ul style="margin:4px 0 0 0;padding-right:18px">'
-            '<li><b>symbol / ticker / stock</b> — סימול המניה</li>'
-            '<li><b>entry date / open date / trade date</b> — תאריך הכניסה</li>'
-            '<li><b>entry time / open time</b> — שעת הכניסה (HH:MM)</li>'
-            '<li><b>entry price / open price / avg entry</b> — מחיר כניסה</li>'
-            '<li><b>exit price / close price / avg exit</b> — מחיר יציאה</li>'
-            '<li><b>shares / qty / quantity</b> — מספר מניות</li>'
-            '<li><b>setup type / setup / strategy / pattern</b> — סוג הסטאפ (ORB, VWAP Bounce, וכו\')</li>'
+            '<b style="color:#00cf8d">פורמט 1 — היסטוריית הוראות (שורה לכל קנייה/מכירה):</b><br>'
+            '<ul style="margin:2px 0 8px 0;padding-right:18px">'
+            '<li><b>סוג פעולה / action / type</b> — קנייה / מכירה (חובה לזיהוי)</li>'
+            '<li><b>ני"ע / symbol / ticker</b> — סימול הנייר</li>'
+            '<li><b>תאריך ביצוע / date / entry date</b> — תאריך העסקה</li>'
+            '<li><b>שווי / value / amount</b> — שווי כולל של ההוראה (או: כמות × שער)</li>'
+            '<li><b>כמות / shares / qty</b> — כמות מניות</li>'
+            '<li><b>שער / entry price</b> — מחיר ביצוע</li>'
+            '<li><b>עמלה / commission</b> — עמלה (אופציונלי)</li>'
             '</ul>'
-            '<b style="color:#aaa">טיפ:</b> הוסף עמודת "Setup Type" ידנית ב-Excel לפני ההעלאה.'
+            '<b style="color:#00cf8d">פורמט 2 — יומן עסקאות (שורה לכל עסקה שלמה עם P&L):</b><br>'
+            '<ul style="margin:2px 0 8px 0;padding-right:18px">'
+            '<li><b>p&l / pnl / רווח/הפסד / gain/loss</b> — רווח/הפסד לעסקה (חובה)</li>'
+            '<li><b>symbol / ticker</b> — סימול, entry/exit date, entry/exit price, shares (אופציונלי)</li>'
+            '<li><b>setup type / strategy</b> — סוג הסטאפ (אופציונלי)</li>'
+            '</ul>'
+            '<b style="color:#aaa">💡 טיפ:</b> ייצוא ישיר מ-IBI / הפועלים / לאומי / דיסקונט נתמך אוטומטית.'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -470,7 +739,10 @@ def _render_summary_strip(df: pd.DataFrame) -> None:
 
     portfolio_count = int((df["source"] == "portfolio").sum()) if "source" in df.columns else 0
     csv_count       = int((df["source"] == "csv").sum())       if "source" in df.columns else 0
-    source_detail   = f"תיק: {portfolio_count}"
+    history_count   = int((df["source"] == "history").sum())   if "source" in df.columns else 0
+    source_detail   = f"תיק פתוח: {portfolio_count}"
+    if history_count:
+        source_detail += f" | עסקאות סגורות: {history_count}"
     if csv_count:
         source_detail += f" | CSV: {csv_count}"
 
@@ -713,7 +985,381 @@ def _render_patterns(patterns: List[Dict[str, Any]]) -> None:
     st.markdown(cards_html, unsafe_allow_html=True)
 
 
+# ── Live price enrichment ─────────────────────────────────────────────────────
+
+def _apply_live_prices(csv_raw: pd.DataFrame, prices: dict) -> pd.DataFrame:
+    """Return a copy of the CSV DataFrame with unrealized P&L added for open positions.
+
+    Open positions have remaining_shares > 0.  For those, total pnl =
+    realized_pnl + (current_price - avg_buy_price) × remaining_shares.
+    is_win and current_price columns are updated accordingly.
+    Called on every render so the unrealized figure stays fresh without
+    re-parsing the CSV.
+    """
+    if csv_raw.empty or "remaining_shares" not in csv_raw.columns:
+        return csv_raw
+
+    df = csv_raw.copy()
+    df["current_price"] = None
+
+    for idx, row in df.iterrows():
+        if row.get("status") != "פתוח":
+            continue
+        remaining  = row.get("remaining_shares", 0) or 0
+        avg_cost   = row.get("avg_buy_price",    0) or 0
+        realized   = row.get("realized_pnl",     0) or 0
+        ticker     = str(row.get("symbol", ""))
+        if remaining <= 0 or avg_cost <= 0 or not ticker:
+            continue
+        cur_price = (prices.get(ticker) or {}).get("price")
+        if cur_price is None:
+            continue
+        unrealized = (cur_price - avg_cost) * remaining
+        df.at[idx, "pnl"]           = round(realized + unrealized, 2)
+        df.at[idx, "is_win"]        = (realized + unrealized) > 0
+        df.at[idx, "current_price"] = round(cur_price, 2)
+
+    return df
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
+
+def _render_trade_history(portfolio: dict, prices: dict) -> None:
+    """Unified trade list: open portfolio lots + history sells + CSV trades (no dups).
+
+    Deduplication strategy: the CSV is the authoritative source. Any ticker that
+    appears in the CSV is owned by the CSV — portfolio lots and history sells for
+    that same ticker are suppressed so each position appears exactly once.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    # ── Pre-compute tickers covered by the CSV ────────────────────────────────
+    _csv_raw: "pd.DataFrame" = st.session_state.get("_tj_csv_df", pd.DataFrame())
+    csv_tickers: set = set()
+    if not _csv_raw.empty and "symbol" in _csv_raw.columns:
+        for t in _csv_raw["symbol"].dropna():
+            s = str(t).strip().upper()
+            if s:
+                csv_tickers.add(s)
+
+    # ── Source 1: open lots from portfolio (skip tickers owned by CSV) ────────
+    for layer, lots in portfolio.get("layers", {}).items():
+        for lot in lots:
+            shares = float(lot.get("shares") or 0)
+            if shares <= 0:
+                continue
+            ticker    = lot.get("ticker", "")
+            if ticker.upper() in csv_tickers:
+                continue          # CSV owns this ticker
+            buy_date  = lot.get("buy_date", "")
+            buy_price = lot.get("buy_price")
+            cur_price = (prices.get(ticker) or {}).get("price")
+            cost      = buy_price * shares if buy_price else None
+            pnl       = round((cur_price - buy_price) * shares, 2) if (buy_price and cur_price) else None
+            pnl_pct   = (pnl / cost * 100) if (pnl is not None and cost) else None
+            rows.append({
+                "entry_date":  buy_date,
+                "exit_date":   "",
+                "ticker":      ticker,
+                "status":      "פתוח",
+                "shares":      shares,
+                "entry_price": buy_price,
+                "exit_price":  cur_price,
+                "cost":        cost,
+                "pnl":         pnl,
+                "pnl_pct":     pnl_pct,
+                "layer":       layer,
+                "source":      "תיק",
+            })
+
+    # ── Source 2: history sells (skip tickers owned by CSV) ──────────────────
+    for entry in portfolio.get("trade_history", []):
+        if entry.get("action") != "sell":
+            continue
+        ticker = entry.get("ticker", "")
+        if ticker.upper() in csv_tickers:
+            continue              # CSV owns this ticker
+        buy_price  = entry.get("buy_price")
+        sell_price = entry.get("price")
+        shares     = float(entry.get("shares") or 0)
+        pnl        = entry.get("pnl")
+        if pnl is None and buy_price is not None and sell_price is not None:
+            pnl = round((float(sell_price) - float(buy_price)) * shares, 2)
+        cost    = float(buy_price) * shares if buy_price else None
+        pnl_pct = (pnl / cost * 100) if (pnl is not None and cost) else None
+        rows.append({
+            "entry_date":  entry.get("buy_date", ""),
+            "exit_date":   entry.get("date") or "",
+            "ticker":      ticker,
+            "status":      "סגור",
+            "shares":      shares,
+            "entry_price": buy_price,
+            "exit_price":  sell_price,
+            "cost":        cost,
+            "pnl":         pnl,
+            "pnl_pct":     pnl_pct,
+            "layer":       entry.get("layer", ""),
+            "source":      "היסטוריה",
+        })
+
+    # ── Source 3: CSV (authoritative for its tickers, no further dedup needed) ─
+    csv_df = _apply_live_prices(_csv_raw, prices)
+    if not csv_df.empty:
+        is_txn = "remaining_shares" in csv_df.columns
+        for _, row in csv_df.iterrows():
+            ticker = str(row.get("symbol") or "")
+            if not ticker:
+                continue
+            if is_txn:
+                ep = row.get("avg_buy_price")
+                xp = row.get("current_price")
+                sh = float(row.get("shares") or 0)
+            else:
+                ep = row.get("entry_price")
+                xp = row.get("exit_price")
+                sh = float(row.get("shares") or 0)
+            try:
+                pnl: Optional[float] = float(row.get("pnl")) if row.get("pnl") is not None else None
+            except (TypeError, ValueError):
+                pnl = None
+            ep_f  = float(ep) if ep is not None else None
+            xp_f  = float(xp) if xp is not None else None
+            cost  = ep_f * sh  if ep_f else None
+            pnl_pct = (pnl / cost * 100) if (pnl is not None and cost) else None
+            status  = str(row.get("status") or "סגור")
+            rows.append({
+                "entry_date":  str(row.get("entry_date") or ""),
+                "exit_date":   str(row.get("exit_date") or "") if row.get("exit_date") else "",
+                "ticker":      ticker,
+                "status":      status,
+                "shares":      sh,
+                "entry_price": ep_f,
+                "exit_price":  xp_f,
+                "cost":        cost,
+                "pnl":         pnl,
+                "pnl_pct":     pnl_pct,
+                "layer":       str(row.get("layer") or ""),
+                "source":      "CSV",
+            })
+
+    section_title("רשימת עסקאות", "עסקאות פתוחות וסגורות — תיק, מכירות ו-CSV")
+
+    if not rows:
+        st.info("אין עסקאות לתצוגה. קניות ומכירות חדשות יירשמו כאן אוטומטית, או העלה CSV.")
+        return
+
+    # closed first (newest exit), then open (newest entry)
+    rows.sort(key=lambda r: (r["status"] == "פתוח", r.get("entry_date") or ""), reverse=True)
+
+    open_rows   = [r for r in rows if r["status"] == "פתוח"]
+    closed_rows = [r for r in rows if r["status"] != "פתוח"]
+    closed_pnl  = sum(r["pnl"] for r in closed_rows if r["pnl"] is not None)
+    unrealized  = sum(r["pnl"] for r in open_rows   if r["pnl"] is not None)
+    cp_c = COLOR["positive"] if closed_pnl >= 0 else COLOR["negative"]
+    ur_c = COLOR["positive"] if unrealized  >= 0 else COLOR["negative"]
+
+    st.markdown(
+        f'<div dir="rtl" style="font-size:12px;color:{COLOR["text_dim"]};'
+        f'background:#1a1a1a;border-radius:6px;padding:8px 14px;margin-bottom:14px">'
+        f'<b style="color:{COLOR["primary"]}">{len(rows)}</b> עסקאות | '
+        f'<b style="color:#4CAF50">{len(open_rows)}</b> פתוחות | '
+        f'<b style="color:#aaa">{len(closed_rows)}</b> סגורות | '
+        f'<b style="color:{COLOR["primary"]}">{len({r["ticker"] for r in rows})}</b> סימולים | '
+        f'ממומש: <b style="color:{cp_c}">${closed_pnl:+,.2f}</b> | '
+        f'לא ממומש: <b style="color:{ur_c}">${unrealized:+,.2f}</b>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    _TH = (
+        f"padding:5px 10px;color:{COLOR['primary']};"
+        f"border-bottom:2px solid #333;font-size:11px;text-align:right;white-space:nowrap"
+    )
+    _TD  = "padding:5px 10px;font-size:11px;text-align:right"
+    _TDF = "padding:5px 10px;font-size:11px;text-align:right;font-weight:700"
+
+    hdr = (
+        f'<div dir="rtl" style="overflow-x:auto">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:11px">'
+        f'<thead><tr>'
+        f'<th style="{_TH}">תאריך קנייה</th>'
+        f'<th style="{_TH}">Ticker</th>'
+        f'<th style="{_TH}">מצב</th>'
+        f'<th style="{_TH}">כמות</th>'
+        f'<th style="{_TH}">מחיר קנייה</th>'
+        f'<th style="{_TH}">מחיר מכירה/נוכחי</th>'
+        f'<th style="{_TH}">תאריך מכירה</th>'
+        f'<th style="{_TH}">רווח/הפסד $</th>'
+        f'<th style="{_TH}">רווח/הפסד %</th>'
+        f'<th style="{_TH}">מקור</th>'
+        f'</tr></thead><tbody>'
+    )
+
+    rows_html = ""
+    for i, row in enumerate(rows):
+        ticker  = row["ticker"]
+        sym     = "₪" if is_tase_numeric(ticker) else "$"
+        status  = row["status"]
+        pnl     = row.get("pnl")
+        pnl_pct = row.get("pnl_pct")
+        is_open = status == "פתוח"
+
+        if is_open:
+            status_html = '<span style="color:#4CAF50;font-weight:700">🟢 פתוח</span>'
+            bg = "#0a1a0a" if i % 2 == 0 else "#0d1d0d"
+        else:
+            icon  = "🟢" if (pnl or 0) >= 0 else "🔴"
+            pnl_c = COLOR["positive"] if (pnl or 0) >= 0 else COLOR["negative"]
+            status_html = f'<span style="color:{pnl_c};font-weight:700">{icon} סגור</span>'
+            bg = "#161616" if i % 2 == 0 else "#1a1a1a"
+
+        ep     = row.get("entry_price")
+        xp     = row.get("exit_price")
+        ep_str = f"{sym}{ep:,.2f}" if ep is not None else "—"
+        xp_str = (
+            f'<span style="color:{COLOR["text_dim"]}">{sym}{xp:,.2f}</span>'
+            if (is_open and xp is not None)
+            else (f"{sym}{xp:,.2f}" if xp is not None else "—")
+        )
+
+        if pnl is not None:
+            pnl_c      = COLOR["positive"] if pnl >= 0 else COLOR["negative"]
+            note       = ' <span style="font-size:9px;color:#888">(לא ממומש)</span>' if is_open else ""
+            dollar_str = f'<span style="color:{pnl_c};font-weight:700">{sym}{pnl:+,.2f}</span>{note}'
+            pct_str    = (
+                f'<span style="color:{pnl_c};font-weight:700">{pnl_pct:+.2f}%</span>'
+                if pnl_pct is not None else "—"
+            )
+        else:
+            dollar_str = "—"
+            pct_str    = "—"
+
+        source_c = {"תיק": COLOR["primary"], "היסטוריה": "#94a3b8", "CSV": "#f59e0b"}.get(
+            row.get("source", ""), "#888"
+        )
+        src_html = f'<span style="color:{source_c};font-size:10px">{row.get("source","")}</span>'
+        exit_str = row["exit_date"] if row["exit_date"] else "—"
+
+        rows_html += (
+            f'<tr style="background:{bg}">'
+            f'<td style="{_TD}">{row["entry_date"]}</td>'
+            f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{ticker}</td>'
+            f'<td style="{_TD}">{status_html}</td>'
+            f'<td style="{_TD}">{row.get("shares", 0):.3f}</td>'
+            f'<td style="{_TD}">{ep_str}</td>'
+            f'<td style="{_TD}">{xp_str}</td>'
+            f'<td style="{_TD};color:{COLOR["text_dim"]}">{exit_str}</td>'
+            f'<td style="{_TD}">{dollar_str}</td>'
+            f'<td style="{_TD}">{pct_str}</td>'
+            f'<td style="{_TD}">{src_html}</td>'
+            f'</tr>'
+        )
+
+    # ── Total row ─────────────────────────────────────────────────────────────
+    total_pnl  = sum(r["pnl"]  for r in rows if r["pnl"]  is not None)
+    total_cost = sum(r["cost"] for r in rows if r["cost"] is not None)
+    total_pct  = (total_pnl / total_cost * 100) if total_cost else None
+    tot_c      = COLOR["positive"] if total_pnl >= 0 else COLOR["negative"]
+    tot_pct_str = f'<span style="color:{tot_c};font-weight:800">{total_pct:+.2f}%</span>' if total_pct is not None else "—"
+
+    rows_html += (
+        f'<tr style="background:#0a1229;border-top:2px solid {COLOR["primary"]}">'
+        f'<td style="{_TDF};color:{COLOR["primary"]}" colspan="7">סה״כ</td>'
+        f'<td style="{_TDF};color:{tot_c}">${total_pnl:+,.2f}</td>'
+        f'<td style="{_TDF}">{tot_pct_str}</td>'
+        f'<td style="{_TD}"></td>'
+        f'</tr>'
+    )
+
+    st.markdown(f'{hdr}{rows_html}</tbody></table></div>', unsafe_allow_html=True)
+    color_legend([
+        (COLOR["primary"],  "עמדות פתוחות (תיק)"),
+        (COLOR["positive"], "עסקה סגורה ברווח"),
+        (COLOR["negative"], "עסקה סגורה בהפסד"),
+        ("#f59e0b",         "מ-CSV"),
+    ])
+
+    # ── Edit panel ────────────────────────────────────────────────────────────
+    editable = [(i, r) for i, r in enumerate(rows) if r["source"] in ("תיק", "היסטוריה")]
+    if not editable:
+        return
+
+    with st.expander("✏️ ערוך עסקה"):
+        opt_labels = [
+            f"{r['ticker']} | {r['entry_date']} | {r['source']}"
+            for _, r in editable
+        ]
+        sel_label = st.selectbox("בחר עסקה", opt_labels, key="tj_edit_sel")
+        sel_pos   = opt_labels.index(sel_label)
+        sel_row   = editable[sel_pos][1]
+        is_hist   = sel_row["source"] == "היסטוריה"
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            new_entry_date = st.text_input(
+                "תאריך קנייה", value=sel_row["entry_date"] or "", key="tj_ed_edate"
+            )
+            new_shares = st.number_input(
+                "כמות", value=float(sel_row["shares"] or 0),
+                min_value=0.0, step=0.001, format="%.3f", key="tj_ed_shares"
+            )
+        with c2:
+            new_ep = st.number_input(
+                "מחיר קנייה",
+                value=float(sel_row["entry_price"] or 0),
+                min_value=0.0, step=0.01, format="%.4f", key="tj_ed_ep"
+            )
+            if is_hist:
+                new_xp = st.number_input(
+                    "מחיר מכירה",
+                    value=float(sel_row.get("exit_price") or 0),
+                    min_value=0.0, step=0.01, format="%.2f", key="tj_ed_xp"
+                )
+        with c3:
+            if is_hist:
+                new_exit_date = st.text_input(
+                    "תאריך מכירה",
+                    value=sel_row.get("exit_date") or "",
+                    key="tj_ed_xdate"
+                )
+
+        if st.button("💾 שמור שינויים", key="tj_ed_save", type="primary"):
+            if sel_row["source"] == "תיק":
+                update_lot(
+                    portfolio,
+                    sel_row.get("layer", ""),
+                    sel_row["ticker"],
+                    sel_row["entry_date"],
+                    new_shares,
+                    new_entry_date.strip() or sel_row["entry_date"],
+                    buy_price=new_ep if new_ep > 0 else sel_row.get("entry_price"),
+                )
+            else:
+                orig_buy_d  = sel_row["entry_date"]
+                orig_sell_d = sel_row.get("exit_date") or ""
+                for hist_entry in portfolio.get("trade_history", []):
+                    if (hist_entry.get("action") == "sell"
+                            and hist_entry.get("ticker", "").upper() == sel_row["ticker"].upper()
+                            and hist_entry.get("buy_date", "") == orig_buy_d
+                            and hist_entry.get("date", "") == orig_sell_d):
+                        hist_entry["shares"]    = round(new_shares, 4)
+                        hist_entry["buy_price"] = round(new_ep, 4)
+                        if new_entry_date.strip():
+                            hist_entry["buy_date"] = new_entry_date.strip()
+                        hist_entry["price"] = round(new_xp, 4)
+                        if new_exit_date.strip():
+                            hist_entry["date"] = new_exit_date.strip()
+                        bp = hist_entry.get("buy_price")
+                        sp = hist_entry.get("price")
+                        sh = hist_entry.get("shares")
+                        if bp and sp and sh:
+                            hist_entry["pnl"] = round(
+                                (float(sp) - float(bp)) * float(sh), 2
+                            )
+                        break
+                save_portfolio(portfolio)
+            st.rerun()
+
 
 def render_trading_journal(portfolio: dict, data: dict) -> None:
     """Render the trading journal analyzer sub-tab."""
@@ -722,8 +1368,11 @@ def render_trading_journal(portfolio: dict, data: dict) -> None:
         "ניתוח ביצועי מסחר — כל הלוטים מהתיק + עסקאות סגורות (CSV אופציונלי)",
     )
 
-    # ── Source A: auto-load from portfolio ────────────────────────────────────
+    # ── Source A: auto-load from portfolio (open lots) ───────────────────────
     portfolio_df = _portfolio_to_trades(portfolio, data)
+
+    # ── Source C: closed trades from trade_history ────────────────────────────
+    history_df = _history_to_closed_trades(portfolio)
 
     # ── Source B: optional CSV upload ────────────────────────────────────────
     col_upload, col_clear = st.columns([6, 1])
@@ -742,32 +1391,66 @@ def render_trading_journal(portfolio: dict, data: dict) -> None:
             st.session_state.pop("_tj_csv_filename", None)
             st.rerun()
 
-    # Process new upload (only if filename changed to avoid re-parsing on every rerun)
+    # Process new upload — retry every render until success (filename stored only on success)
     if uploaded is not None:
         stored_name = st.session_state.get("_tj_csv_filename")
         if stored_name != uploaded.name:
-            st.session_state["_tj_csv_filename"] = uploaded.name
+            raw: Optional[pd.DataFrame] = None
             try:
-                raw = pd.read_csv(uploaded)
+                # Try common encodings — Israeli broker exports use UTF-8 BOM or cp1255
+                for enc in ("utf-8-sig", "cp1255", "windows-1255", "utf-8", "latin-1"):
+                    try:
+                        uploaded.seek(0)
+                        candidate = pd.read_csv(uploaded, encoding=enc)
+                        if len(candidate.columns) >= 2:
+                            raw = candidate
+                            break
+                    except Exception:
+                        continue
+
+                if raw is None:
+                    raise ValueError(
+                        "לא ניתן לקרוא את הקובץ. "
+                        "נסה לשמור מחדש כ-CSV (UTF-8) מתוך Excel."
+                    )
+
+                # Detect semicolon-separated files (European/Israeli locale export)
+                if len(raw.columns) <= 1:
+                    uploaded.seek(0)
+                    raw = pd.read_csv(uploaded, sep=";", encoding="utf-8-sig")
+
                 parsed_csv = _parse_csv_trades(raw)
+                # Filename stored ONLY on success so failed files are retried on next render
+                st.session_state["_tj_csv_filename"] = uploaded.name
                 st.session_state["_tj_csv_df"] = parsed_csv
+
             except ValueError as exc:
                 st.error(str(exc))
+                if raw is not None:
+                    with st.expander("🔍 עמודות שנמצאו בקובץ (לאבחון)", expanded=True):
+                        st.caption("רשימת השמות שנמצאו — השווה לטבלת הפורמט הנדרש למעלה:")
+                        st.write(list(raw.columns))
+                        st.dataframe(raw.head(3))
                 st.session_state.pop("_tj_csv_df", None)
             except Exception as exc:
                 st.error(f"שגיאה בלתי צפויה בקריאת הקובץ: {exc}")
+                if raw is not None:
+                    with st.expander("🔍 עמודות שנמצאו (לאבחון)", expanded=True):
+                        st.write(list(raw.columns))
                 st.session_state.pop("_tj_csv_df", None)
 
-    csv_df: pd.DataFrame = st.session_state.get("_tj_csv_df", pd.DataFrame())
+    # Load raw parsed CSV from session_state, then apply live prices to open positions
+    _csv_raw: pd.DataFrame = st.session_state.get("_tj_csv_df", pd.DataFrame())
+    csv_df = _apply_live_prices(_csv_raw, data.get("prices", {}))
     _render_upload_hint()
 
+    # ── Trade list (all sources) ──────────────────────────────────────────────
+    st.divider()
+    _render_trade_history(portfolio, data.get("prices", {}))
+
     # ── Merge sources ─────────────────────────────────────────────────────────
-    if not csv_df.empty and not portfolio_df.empty:
-        df = pd.concat([portfolio_df, csv_df], ignore_index=True)
-    elif not csv_df.empty:
-        df = csv_df
-    else:
-        df = portfolio_df
+    frames = [f for f in [portfolio_df, history_df, csv_df] if not f.empty]
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     if df.empty:
         st.info(
@@ -838,3 +1521,108 @@ def render_trading_journal(portfolio: dict, data: dict) -> None:
         ("סטאפ", "אסטרטגיית כניסה — ORB, VWAP Bounce, Momentum וכד'. ניתן להוסיף ידנית ב-CSV."),
         ("אזור סכנה", "שיעור הצלחה מתחת ל-35% עם מינימום 3 עסקאות — אות לבדיקה מחדש."),
     ])
+
+
+# ── Public helper for P&L tab ─────────────────────────────────────────────────
+
+def render_closed_trades_summary(prices: Optional[dict] = None) -> None:
+    """Render a realized + unrealized P&L section from uploaded CSV.
+
+    Called from portfolio_tab.py so closed-trade data surfaces in the P&L sub-tab
+    without modifying portfolio lots.  Accepts prices dict for live valuation of
+    open (not-yet-fully-sold) positions.
+    """
+    _csv_raw: pd.DataFrame = st.session_state.get("_tj_csv_df", pd.DataFrame())
+    if _csv_raw.empty:
+        return
+    csv_df = _apply_live_prices(_csv_raw, prices or {})
+
+    section_title("עסקאות סגורות — מ-CSV", "רווח/הפסד ממומש מקובץ עסקאות שהועלה")
+
+    overall   = _compute_overall(csv_df)
+    total_pnl = overall.get("total_pnl") or 0.0
+    win_rate  = overall.get("win_rate")
+    n_trades  = overall.get("total_trades", 0)
+    filename  = st.session_state.get("_tj_csv_filename", "")
+
+    pnl_c = COLOR["positive"] if total_pnl >= 0 else COLOR["negative"]
+
+    # KPI strip
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(
+        f'<div style="background:#1a1f2e;border:1px solid #1f2937;border-radius:8px;'
+        f'padding:12px 14px;text-align:right;direction:rtl">'
+        f'<div style="font-size:10px;color:#888;margin-bottom:3px">💰 רווח/הפסד ממומש</div>'
+        f'<div style="font-size:20px;font-weight:800;color:{pnl_c}">${total_pnl:+,.2f}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    c2.markdown(
+        f'<div style="background:#1a1f2e;border:1px solid #1f2937;border-radius:8px;'
+        f'padding:12px 14px;text-align:right;direction:rtl">'
+        f'<div style="font-size:10px;color:#888;margin-bottom:3px">📊 עסקאות סגורות</div>'
+        f'<div style="font-size:20px;font-weight:800;color:{COLOR["primary"]}">{n_trades}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if win_rate is not None:
+        wr_c = COLOR["positive"] if win_rate >= 0.55 else (COLOR["warning"] if win_rate >= 0.40 else COLOR["negative"])
+        c3.markdown(
+            f'<div style="background:#1a1f2e;border:1px solid #1f2937;border-radius:8px;'
+            f'padding:12px 14px;text-align:right;direction:rtl">'
+            f'<div style="font-size:10px;color:#888;margin-bottom:3px">✅ שיעור הצלחה</div>'
+            f'<div style="font-size:20px;font-weight:800;color:{wr_c}">{win_rate*100:.1f}%</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    if filename:
+        c4.markdown(
+            f'<div style="background:#1a1f2e;border:1px solid #1f2937;border-radius:8px;'
+            f'padding:12px 14px;text-align:right;direction:rtl">'
+            f'<div style="font-size:10px;color:#888;margin-bottom:3px">📄 קובץ</div>'
+            f'<div style="font-size:10px;color:#ccc;word-break:break-all">{filename}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div style="margin-top:10px"></div>', unsafe_allow_html=True)
+
+    # Build display table
+    is_position_log = "remaining_shares" in csv_df.columns  # from _parse_transaction_csv
+
+    if is_position_log:
+        col_rename = {
+            "symbol":           "Ticker",
+            "entry_date":       "תאריך כניסה",
+            "exit_date":        "תאריך יציאה",
+            "shares":           "כמות קנויה",
+            "remaining_shares": "נותר",
+            "avg_buy_price":    "עלות ממוצעת",
+            "current_price":    "מחיר נוכחי",
+            "realized_pnl":     "ממומש",
+            "pnl":              "רווח/הפסד כולל",
+            "status":           "מצב",
+        }
+    else:
+        col_rename = {
+            "symbol":      "Ticker",
+            "entry_date":  "תאריך כניסה",
+            "exit_date":   "תאריך יציאה",
+            "entry_price": "מחיר כניסה",
+            "exit_price":  "מחיר יציאה",
+            "shares":      "כמות",
+            "pnl":         "רווח/הפסד",
+        }
+
+    display_cols = [c for c in col_rename if c in csv_df.columns]
+    _HIDDEN = {"source", "is_win", "day_of_week", "time_block", "entry_date_parsed"}
+    if display_cols:
+        sub = csv_df[display_cols].copy()
+        if "pnl" in sub.columns:
+            sub = sub.sort_values("pnl", ascending=False)
+        sub = sub.rename(columns=col_rename).reset_index(drop=True)
+        st.dataframe(sub, use_container_width=True, hide_index=True)
+    else:
+        raw_cols = [c for c in csv_df.columns if not c.startswith("_") and c not in _HIDDEN]
+        if raw_cols:
+            st.dataframe(csv_df[raw_cols].head(50), use_container_width=True, hide_index=True)

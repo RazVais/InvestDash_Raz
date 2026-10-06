@@ -1,40 +1,27 @@
-# RazDashboard v3.7
+# RazDashboard v4.3
 
 Personal investment dashboard for the "Age of AI" portfolio. Tracks stocks across strategic layers with live data from Yahoo Finance, Finviz, and Finnhub. Built with Streamlit + Python, Hebrew RTL UI.
 
 ## Features
 
-### Sidebar navigation
-Bloomberg/TradingView-style layout: sidebar is the primary navigation hub with 5 main tabs, macro watchlist with SVG sparklines, and tool buttons at the bottom.
+### Navigation (v4 — organised by what you're doing)
+| Tab | For | Contents |
+|---|---|---|
+| **☀️ היום** | Daily check-in | Macro strip · change since yesterday (flow-adjusted) vs VOO · attention list (red flags, stops/alerts, earnings ≤ 7 days) · market pulse · AI session briefing · per-ticker AI briefs |
+| **💼 תיק** | What you own | 📊 P&L + add/edit/remove lots · 📉 performance history vs VOO (time-weighted, drawdown) · ⚖️ rebalancing vs layer targets with new-cash allocation · 📋 securities + fundamentals · 👥 analysts & buy timing · 🗺 charts (donut, heatmap, correlation, stress test) · ⚠️ stops & alerts |
+| **📈 מניה** | Buy/sell decisions on one ticker | Candlestick + indicators + relative strength · Monte Carlo · per-ticker AI (session, buy timing, consensus, 5 filters, news) · 📐 position-size calculator · 💡 ideas (suggestions + 5-filter screening) |
+| **🎯 תרגול** | Trading practice | ORB intraday setup · trailing-stop backtester · trade journal analysis · AI trade journal |
 
-### KPI Header
-Live stats bar at the top of every page:
-- **שווי תיק** — total portfolio value (all lots × current prices)
-- **רווח/הפסד** — total P&L in $ and %
-- **Alpha vs VOO** — 30-day portfolio return minus VOO 30-day return
-- **🔔 Bell** — alert count badge; red if flags triggered, yellow if watches, click to open Red Flags
+The 🔔 bell in the header opens the full red-flags table.
 
-### Primary tabs (sidebar)
-- **סקירה (Overview)** — macro strip (VIX, 10Y yield, DXY), performance table with upside % and alpha vs VOO, portfolio P&L summary, sector allocation donut chart, 1-year correlation matrix heatmap
-- **תיק שלי (Portfolio)** — two sub-tabs: **📊 תיק שלי**: multi-lot model with individual dates, buy prices (auto-filled from live data if left blank), and P&L; add/edit/remove lots; toggle **👁 מעקב בלבד** to track a ticker without a position — it appears across all analysis tabs but is excluded from P&L, shown with a 👁 indicator and dimmed row in Overview; **📈 יומן עסקאות**: retroactive trading performance analysis — auto-loads all portfolio lots from first buy date, optional broker CSV supplement for closed trades; 6 analysis sections: overall stats (win rate, expectancy, avg win/loss), by portfolio layer, by setup type, by time-of-day block (9:30–16:00), by day of week, and auto pattern detection with Hebrew recommendations
-- **גרפים (Charts)** — 1-year candlestick chart per ticker with toggleable overlays: SMA 20/50/200, Bollinger Bands, RSI(14), volume bars, analyst price target line, 52W high/low, relative strength vs VOO; **ORB (Opening Range Breakout)** intraday chart: 5-condition signal (price break + volume surge + above VWAP + trade window + top-50% bar close), configurable interval (1m/2m/5m/15m) and volume multiplier, green background on active episodes; **Monte Carlo GBM simulation**: 252-day fan chart (1 000 paths) + 6 KPI cards: profit probability, median price, P5, P95, VaR(5%), and max profit (best-case path)
-- **אנליסטים (Analysts)** — three sub-tabs:
-  - **📋 ניתוח יומי** — Finviz-style heatmap, market pulse KPIs, analyst conviction scatter matrix; **📊 Today's Session AI briefing**: single Claude Haiku call covers all tickers, returns priority-sorted table (High/Medium/Low) with catalyst, price assessment, support/resistance levels (R:$X S:$Y), and likely intraday setup; overall market context paragraph; Claude Haiku per-ticker daily brief
-  - **⏰ תזמון קנייה** — AI buy timing: 0-100 signal score (RSI, SMA50/200, Bollinger, analyst upside, VIX, Damodaran sector P/E) + Claude Haiku Hebrew verdict card using Buffett/Lynch, Damodaran, and Breitstein frameworks; tickers ranked best opportunity first; **📏 Trailing Stop backtester**: n-bar trailing stop on 1yr daily data, MA-cross entry, color-coded stop line (red=initial/green=trailing), entry/exit markers, configurable lookback + MA periods, win rate + P&L stats
-  - **👥 קונצנזוס ואנליסטים** — consensus table with mini distribution bar, price target range chart with error bars, recent upgrades/downgrades with major firm highlighting
-- **פונדמנטלס (Fundamentals)** — P/E, Fwd P/E, EPS, ROE, ROA, P/B, P/S, Debt/Equity, Market Cap, Short Float, Institutional Ownership, Sector, Industry via Finviz; next earnings countdown with urgency colors; dividend yield; EPS trend on-demand
+### Watch list tiers
+Held tickers and ⭐ starred watch names (תיק → 📍 מעקב) get analyst data, fundamentals, news and daily AI. Other watch-only tickers get prices only, and AI runs when you click 🤖.
 
-### Red Flags (bell icon in header)
-All flags 100% automated (no manual entries): commodity price checks (uranium, copper, gold), analyst proxy signals, portfolio structure checks, thesis checks. Status: 🔴/🟡/🟢/⚫
-
-### Secondary tabs (above main content)
-- **חדשות (News)** — latest headlines per ticker, filterable by ticker, date-sorted
-- **💡 המלצות (Recommendations)** — AI + analyst-backed buy/hold/sell recommendations
-- **📋 יומי (Daily Brief)** — per-ticker Hebrew daily brief: consensus + upside, recent upgrade/downgrade pills, red flag status, 1-month alpha vs VOO. Optional Claude Haiku AI narrative (2-3 Hebrew bullet points, cached 1h)
-- **🔬 ניתוח (5-Filter Analysis)** — auto-analyzes all watch-list tickers not currently in portfolio using 5 investment filters via Claude Haiku: revenue growth, competitive position, leadership, market timing, risk. Scored 1–5 per filter with color coding. Custom ticker input for any stock
+### Red flags
+All automated: commodity prices, analyst signals, portfolio structure, thesis checks — plus your own stop losses, trailing stops and price alerts. 🔴/🟡/🟢/⚫. Newly triggered flags can be emailed automatically.
 
 ### Infrastructure
-- **Market-aware caching** — data fetched once per trading day; Refresh button disabled on weekends/holidays
+- **Market-aware caching** — prices refresh every 30 min; analyst/fundamental data is cached per ticker for 7 days; AI results once per ticker per trading day. Refresh clears only live data. Failed fetches are retried, never cached
 - **Two-tier parallel loading** — active tab data loaded immediately in ThreadPoolExecutor; remaining keys pre-warmed in background daemon thread
 - **Macro sparklines** — 7-day SVG sparklines for VIX, 10Y yield, DXY in sidebar (green/red trend coloring)
 - **Damodaran sector benchmarks** — annual P/E, EV/EBITDA, and beta data fetched from Prof. Aswath Damodaran's NYU public datasets (no auth required, cached 7 days)
@@ -55,12 +42,13 @@ pip install -r requirements.txt
 1. Sign up at [finnhub.io](https://finnhub.io) (free tier is sufficient)
 2. Copy your API key
 
-### 3. Add your Finnhub key (and optionally Claude key)
-Create (or edit) `.streamlit/secrets.toml`:
+### 3. Add your keys
+Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in what you use:
 ```toml
-FINNHUB_API_KEY  = "your_finnhub_key_here"
-ANTHROPIC_API_KEY = "your_claude_key_here"   # optional — enables AI daily briefs + 5-filter analysis
+FINNHUB_API_KEY   = "your_finnhub_key_here"
+ANTHROPIC_API_KEY = "your_claude_key_here"   # optional — enables AI briefs, buy timing, 5-filter analysis
 ```
+Deploying anywhere public? Set `MODE = "cloud"` and `APP_PASSWORD` — see `SECURITY.md`.
 The app runs without either key — Finnhub falls back to yfinance; Claude features show a prompt to add the key.
 
 ### 4. Run
@@ -120,3 +108,7 @@ dashboard.py          ← thin entry point (page config, KPI header, routing)
 | v3.5 | 2026-04-19 | Monte Carlo GBM simulation; watch-only mode (0-share lots); Portfolio Stress Test; TASE numeric security support |
 | v3.6 | 2026-05-01 | TASE live data via pymaya (api.tase.co.il); mutual fund support; YFRateLimitError handling |
 | v3.7 | 2026-05-02 | Watch-only UI (toggle, 📍 section, 👁 overview indicator); MC max profit KPI card; MC chart crash fixes |
+| v4.0 | 2026-10-06 | Safety: no more overwriting the portfolio/journal after a failed read; shekel holdings converted in every USD total; verified SMTP TLS; escaped news/AI HTML; password gate for cloud |
+| v4.1 | 2026-10-06 | Speed: star tier, per-ticker caches, AI once per ticker per day (≈21 Claude calls/day instead of 124+ per refresh) |
+| v4.2 | 2026-10-06 | Navigation: 4 job-based tabs (היום / תיק / מניה / תרגול) |
+| v4.3 | 2026-10-06 | Decision tools: performance history vs VOO, rebalancing, position sizer, stops & price alerts as red flags |

@@ -3,6 +3,8 @@
 from datetime import date
 import json
 
+import pytest
+
 import src.portfolio as pm
 from src.portfolio import (
     add_lot,
@@ -194,3 +196,109 @@ def test_load_portfolio_strips_empty_layers(tmp_path, monkeypatch):
     p = load_portfolio()
     assert "Empty" not in p["layers"]
     assert "Has Data" in p["layers"]
+
+
+# ── Load-failure guard (never overwrite real data with defaults) ─────────────
+
+@pytest.fixture
+def fresh_session():
+    """Clear the session-state keys load_portfolio/save_portfolio use."""
+    import streamlit as st
+    for k in ("_portfolio_cache", "_portfolio_load_failed", "_portfolio_save_error"):
+        st.session_state.pop(k, None)
+    yield
+    for k in ("_portfolio_cache", "_portfolio_load_failed", "_portfolio_save_error"):
+        st.session_state.pop(k, None)
+
+
+def test_corrupt_file_blocks_save_and_keeps_original(tmp_path, monkeypatch, fresh_session):
+    path = tmp_path / "portfolio.json"
+    monkeypatch.setattr(pm, "PORTFOLIO_FILE", path)
+    path.write_text("{not valid json", encoding="utf-8")
+
+    p = load_portfolio()
+    assert pm.portfolio_load_failed()
+    assert (tmp_path / "portfolio.json.bak").read_text(encoding="utf-8") == "{not valid json"
+
+    assert save_portfolio(p) is False
+    assert path.read_text(encoding="utf-8") == "{not valid json"
+
+
+def test_missing_file_is_not_a_failure(tmp_path, monkeypatch, fresh_session):
+    monkeypatch.setattr(pm, "PORTFOLIO_FILE", tmp_path / "missing.json")
+    p = load_portfolio()
+    assert not pm.portfolio_load_failed()
+    assert save_portfolio(p) is True
+
+
+def test_gist_error_blocks_save(monkeypatch, tmp_path, fresh_session):
+    monkeypatch.setattr(pm, "PORTFOLIO_FILE", tmp_path / "portfolio.json")
+    monkeypatch.setattr(pm, "_get_gist_config", lambda: ("gid12345", "tok"))
+
+    def _boom(*a, **k):
+        raise RuntimeError("500 from GitHub")
+
+    monkeypatch.setattr(pm.requests, "get", _boom)
+    patched = []
+    monkeypatch.setattr(pm.requests, "patch", lambda *a, **k: patched.append(1))
+
+    p = load_portfolio()
+    assert pm.portfolio_load_failed()
+    assert save_portfolio(p) is False
+    assert patched == []
+
+
+def test_gist_save_failure_still_writes_local(monkeypatch, tmp_path, portfolio, fresh_session):
+    import streamlit as st
+    path = tmp_path / "portfolio.json"
+    monkeypatch.setattr(pm, "PORTFOLIO_FILE", path)
+    monkeypatch.setattr(pm, "_get_gist_config", lambda: ("gid12345", "tok"))
+
+    class _Resp:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise RuntimeError("401")
+
+    monkeypatch.setattr(pm.requests, "patch", lambda *a, **k: _Resp())
+    assert save_portfolio(portfolio) is True
+    assert st.session_state.get("_portfolio_save_error") == "gist"
+    assert json.loads(path.read_text(encoding="utf-8"))["layers"] == portfolio["layers"]
+
+
+def test_reload_clears_failure(tmp_path, monkeypatch, fresh_session):
+    path = tmp_path / "portfolio.json"
+    monkeypatch.setattr(pm, "PORTFOLIO_FILE", path)
+    path.write_text("garbage", encoding="utf-8")
+    load_portfolio()
+    assert pm.portfolio_load_failed()
+
+    path.write_text(json.dumps({"layers": {"Core": [{"ticker": "VOO", "shares": 1.0,
+                                                     "buy_date": "2024-01-01"}]}}),
+                    encoding="utf-8")
+    pm.reload_portfolio()
+    p = load_portfolio()
+    assert not pm.portfolio_load_failed()
+    assert "Core" in p["layers"]
+
+
+# ── Star tier ────────────────────────────────────────────────────────────────
+
+def test_active_tickers_is_held_plus_starred(nosave):
+    p = {"layers": {
+        "Core": [{"ticker": "VOO", "shares": 1.0, "buy_date": "2024-01-01"}],
+        "Watch": [{"ticker": "NVDA", "shares": 0.0, "buy_date": "2024-01-01"},
+                  {"ticker": "TSLA", "shares": 0.0, "buy_date": "2024-01-01"}],
+    }}
+    assert pm.held_tickers(p) == ["VOO"]
+    assert pm.active_tickers(p) == ["VOO"]
+    pm.set_starred(p, "NVDA", True)
+    assert pm.active_tickers(p) == ["NVDA", "VOO"]
+    pm.set_starred(p, "NVDA", False)
+    assert pm.active_tickers(p) == ["VOO"]
+
+
+def test_starred_ticker_removed_from_portfolio_is_not_active(nosave):
+    p = {"layers": {"Core": [{"ticker": "VOO", "shares": 1.0, "buy_date": "2024-01-01"}]},
+         "settings": {"starred": ["GONE"]}}
+    assert pm.active_tickers(p) == ["VOO"]

@@ -4,7 +4,7 @@ import streamlit as st
 
 from src.config import COLOR, SUGGESTIONS
 from src.data.analysts import get_analyst_targets, get_consensus
-from src.data.prices import get_stock_data
+from src.data.prices import get_stock_data_with_info
 from src.portfolio import all_tickers
 from src.ui_helpers import color_legend, section_title, term_glossary
 
@@ -25,7 +25,7 @@ def render_suggestions(portfolio, data, td_str, api_key=""):
 
     # ── Live data for candidates ─────────────────────────────────────────────
     tickers_tuple = tuple(sorted(s["ticker"] for s in candidates))
-    prices    = get_stock_data(tickers_tuple, td_str)
+    prices    = get_stock_data_with_info(tickers_tuple, td_str)
     targets   = get_analyst_targets(tickers_tuple, td_str)
     consensus = get_consensus(tickers_tuple, td_str, api_key)
 

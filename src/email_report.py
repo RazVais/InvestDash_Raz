@@ -11,6 +11,7 @@ from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import smtplib
+import ssl
 import threading
 from typing import Optional
 
@@ -19,6 +20,8 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx
 from src.logger import get_logger
 
 _log = get_logger(__name__)
+
+_SMTP_TIMEOUT = 15  # seconds — never hang the UI on a dead mail server
 
 # ── Status display helpers ────────────────────────────────────────────────────
 _STATUS_ICON  = {"triggered": "🔴", "watch": "🟡", "ok": "🟢", "nodata": "⚫"}
@@ -58,26 +61,16 @@ def _base_style():
 
 def build_digest_html(portfolio, data, flag_statuses, td_str):
     """Build full Hebrew HTML digest email body."""
-    from src.data.prices import lookup_buy_price
-    from src.portfolio import all_tickers, lots_for_ticker
+    from src.portfolio import all_tickers
+    from src.valuation import compute_holdings
 
     prices     = data.get("prices", {})
     news_data  = data.get("news", {})
 
-    # ── P&L totals ─────────────────────────────────────────────────────────
-    total_cost = total_value = 0.0
-    for t in all_tickers(portfolio):
-        p = prices.get(t)
-        if not p:
-            continue
-        for _layer, lot in lots_for_ticker(portfolio, t):
-            shares = lot.get("shares", 0)
-            if shares <= 0:
-                continue
-            bp = lookup_buy_price(t, lot["buy_date"], prices)
-            if bp:
-                total_cost  += shares * bp
-                total_value += shares * p["price"]
+    # ── P&L totals (USD; TASE converted from NIS) ──────────────────────────
+    holdings    = compute_holdings(portfolio, prices, data.get("ils_usd"))
+    total_cost  = holdings["cost_usd"]
+    total_value = holdings["value_usd"]
 
     pnl     = total_value - total_cost
     pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0.0
@@ -244,20 +237,25 @@ def _smtp_send(recipients, subject, html_body, smtp_cfg):
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
+        # Verified TLS: without an explicit context Python 3.9 skips certificate
+        # checks, so the SMTP password could be sent to an impostor server.
+        ctx = ssl.create_default_context()
         if port == 465:
-            with smtplib.SMTP_SSL(host, port) as s:
+            with smtplib.SMTP_SSL(host, port, context=ctx, timeout=_SMTP_TIMEOUT) as s:
                 s.login(user, pwd)
                 s.sendmail(user, recipients, msg.as_string())
         else:
-            with smtplib.SMTP(host, port) as s:
+            with smtplib.SMTP(host, port, timeout=_SMTP_TIMEOUT) as s:
                 s.ehlo()
-                s.starttls()
+                s.starttls(context=ctx)
+                s.ehlo()
                 s.login(user, pwd)
                 s.sendmail(user, recipients, msg.as_string())
-        _log.info("Email sent", extra={"to": recipients, "subject": subject})
+        _log.info("Email sent", extra={"n_recipients": len(recipients), "subject": subject})
         return True
     except Exception:
-        _log.error("Email send failed", exc_info=True, extra={"host": host, "to": recipients})
+        _log.error("Email send failed", exc_info=True,
+                   extra={"host": host, "n_recipients": len(recipients)})
         return False
 
 

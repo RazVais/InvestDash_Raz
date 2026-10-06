@@ -4,33 +4,7 @@ import streamlit as st
 
 from src.config import COLOR, TICKER_NAMES, TICKER_PEERS, TICKER_SECTOR
 from src.data.news import get_company_profile, get_today_summary
-from src.market import get_market_state
-from src.portfolio import all_tickers
-
-
-def render_news(portfolio, data, td_str=None, claude_api_key=""):
-    news    = data["news"]
-    tickers = sorted(all_tickers(portfolio))
-
-    if not tickers:
-        st.info("הוסף ניירות ערך לתיק כדי לראות חדשות.")
-        return
-
-    if td_str is None:
-        td_str = str(get_market_state()["last_trading_day"])
-
-    sel = st.selectbox(
-        "בחר מניה",
-        tickers,
-        key="news_sel",
-        format_func=lambda t: f"{t} — {TICKER_NAMES.get(t, t)}",
-    )
-
-    _render_today_summary(sel, news, td_str, claude_api_key)
-    st.divider()
-    _render_company_brief(sel, td_str)
-    st.divider()
-    _render_articles(sel, news)
+from src.ui_helpers import esc, safe_url
 
 
 def _render_today_summary(ticker: str, news: dict, td_str: str, claude_api_key: str):
@@ -49,7 +23,7 @@ def _render_today_summary(ticker: str, news: dict, td_str: str, claude_api_key: 
             f'<div dir="rtl" style="font-size:13px;color:#e0e0e0;line-height:1.8;'
             f'background:#0d1f17;border:1px solid {COLOR["primary"]}33;'
             f'border-radius:8px;padding:14px 16px;margin-bottom:4px">'
-            f'{summary}'
+            f'{esc(summary)}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -63,12 +37,13 @@ def _render_company_brief(ticker: str, td_str: str):
     """Company profile card: description in Hebrew, sector, industry, competitors."""
     profile = get_company_profile(ticker, td_str)
 
-    name     = profile.get("name") or TICKER_NAMES.get(ticker, ticker)
+    # Profile fields come from Yahoo — escape before they reach unsafe_allow_html
+    name     = esc(profile.get("name") or TICKER_NAMES.get(ticker, ticker))
     _static  = TICKER_SECTOR.get(ticker, ("", ""))
-    sector   = profile.get("sector") or _static[0]
-    industry = profile.get("industry") or _static[1]
+    sector   = esc(profile.get("sector") or _static[0])
+    industry = esc(profile.get("industry") or _static[1])
     desc     = profile.get("description", "")
-    website  = profile.get("website", "")
+    website  = safe_url(profile.get("website")) if profile.get("website") else ""
     emp      = profile.get("employees")
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -76,7 +51,7 @@ def _render_company_brief(ticker: str, td_str: str):
         f'<div dir="rtl" style="margin-bottom:4px">'
         f'<span style="font-size:22px;font-weight:800;color:{COLOR["primary"]}">{ticker}</span>'
         f'<span style="font-size:15px;color:{COLOR["text_dim"]};margin-right:10px"> {name}</span>'
-        + (f'<a href="{website}" target="_blank" style="font-size:11px;color:{COLOR["primary"]};'
+        + (f'<a href="{website}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:{COLOR["primary"]};'
            f'text-decoration:none;margin-right:8px">🌐 אתר</a>' if website else "")
         + "</div>",
         unsafe_allow_html=True,
@@ -113,7 +88,7 @@ def _render_company_brief(ticker: str, td_str: str):
         st.markdown(
             f'<div dir="rtl" style="font-size:12px;color:#cccccc;line-height:1.8;'
             f'background:#111827;border-radius:8px;padding:12px 16px;margin-bottom:10px">'
-            f'{preview}'
+            f'{esc(preview)}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -121,7 +96,7 @@ def _render_company_brief(ticker: str, td_str: str):
             with st.expander("קרא עוד"):
                 st.markdown(
                     f'<div dir="rtl" style="font-size:12px;color:#cccccc;line-height:1.8">'
-                    f'{desc}</div>',
+                    f'{esc(desc)}</div>',
                     unsafe_allow_html=True,
                 )
     else:
@@ -162,13 +137,13 @@ def _render_articles(ticker: str, news: dict):
     for art in articles:
         pub       = art.get("published")
         date_str  = pub.strftime("%d.%m.%Y %H:%M") if pub else ""
-        link      = art.get("link", "#")
-        title     = art.get("title", "")
-        publisher = art.get("publisher", "")
+        link      = safe_url(art.get("link"))
+        title     = esc(art.get("title", ""))
+        publisher = esc(art.get("publisher", ""))
 
         st.markdown(
             f'<div dir="ltr" style="padding:8px 0;border-bottom:1px solid #1f2937">'
-            f'<a href="{link}" target="_blank" '
+            f'<a href="{link}" target="_blank" rel="noopener noreferrer" '
             f'style="color:#ffffff;text-decoration:none;font-size:13px;font-weight:500;'
             f'line-height:1.5">{title}</a><br>'
             f'<span style="font-size:10px;color:{COLOR["text_dim"]}">'

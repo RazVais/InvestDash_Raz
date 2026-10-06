@@ -16,8 +16,20 @@ env/
 # Streamlit
 .streamlit/secrets.toml
 
-# Portfolio data (personal, gitignored)
+# Personal data (public repo — never commit)
 portfolio.json
+portfolio.json.bak
+portfolio.json.tmp
+trading_journal_ai.json
+trading_journal_ai.json.bak
+trading_journal_ai.json.tmp
+*.docx
+*.pdf
+
+# Local scratch / experiments
+scraper/
+nvda_fetch.py
+node_modules/
 
 # Environment / secrets
 .env

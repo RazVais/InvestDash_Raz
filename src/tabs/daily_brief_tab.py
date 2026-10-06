@@ -7,39 +7,45 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from src.config import COLOR, PORTFOLIO_ETFS, TICKER_NAMES
-from src.portfolio import all_tickers
+from src import ai
+from src.config import COLOR, HE, PORTFOLIO_ETFS, TICKER_NAMES
+from src.portfolio import active_tickers
 from src.tabs.red_flags import get_all_flag_statuses
-from src.ui_helpers import section_title
+from src.ui_helpers import esc, section_title
 
-# ── Claude Haiku brief (cached 1h) ────────────────────────────────────────────
+# ── Claude Haiku brief (one per ticker per trading day) ──────────────────────
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=43200, show_spinner=False)
+def _brief_cached(ticker: str, td_str: str, _brief_data_str: str, _claude_api_key: str) -> str:
+    """Raises on failure (never cached) so an API hiccup is retried next run."""
+    text = ai.ask(
+        _claude_api_key, 600,  # Hebrew is token-heavy — 200 cut every brief mid-sentence
+        (
+            f"כתוב 2-3 נקודות קצרות בעברית על המניה {ticker} בהתאם לנתונים הבאים:\n"
+            f"{_brief_data_str}\n\n"
+            "כל נקודה בשורה נפרדת. התמקד ב: (1) סנטימנט אנליסטים, "
+            "(2) סיכון עיקרי אם יש, (3) ביצועים יחסיים. "
+            "ענה בעברית בלבד. אל תוסיף כותרת."
+        ),
+        purpose="brief",
+        allow_truncated=True,
+    )
+    if not text:
+        raise ai.AIError("empty brief")
+    ai.mark_done("brief", ticker, td_str)
+    return text
+
+
 def _generate_ticker_brief(
     ticker: str,
     brief_data_str: str,
     td_str: str,
     claude_api_key: str,
 ) -> str:
-    """Generate a 2-3 bullet Hebrew brief for ticker via Claude Haiku. Returns HTML string."""
+    """2-3 bullet Hebrew brief for ticker via Claude Haiku ('' on failure)."""
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=claude_api_key)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"כתוב 2-3 נקודות קצרות בעברית על המניה {ticker} בהתאם לנתונים הבאים:\n"
-                    f"{brief_data_str}\n\n"
-                    "כל נקודה בשורה נפרדת. התמקד ב: (1) סנטימנט אנליסטים, "
-                    "(2) סיכון עיקרי אם יש, (3) ביצועים יחסיים. "
-                    "ענה בעברית בלבד. אל תוסיף כותרת."
-                ),
-            }],
-        )
-        return msg.content[0].text.strip()
+        with ai.key_lock("brief", ticker, td_str):
+            return _brief_cached(ticker, td_str, brief_data_str, claude_api_key)
     except Exception:
         return ""
 
@@ -250,7 +256,7 @@ def _card_ai_html(ticker, label, total, upside_str, bad_flags, alpha, alpha_str,
     if not brief_text:
         return ""
     bullets = "".join(
-        f'<div style="margin-bottom:4px">• {ln}</div>'
+        f'<div style="margin-bottom:4px">• {esc(ln)}</div>'
         for ln in (line.strip() for line in brief_text.split("\n")) if ln
     )
     return (
@@ -364,15 +370,20 @@ def render_daily_brief(
     data: dict,
     td_str: str,
     claude_api_key: str = "",
+    wait_for_ai: bool = True,
 ) -> None:
-    """Render the daily brief tab: one card per portfolio ticker, sorted by flag severity."""
+    """One card per active ticker, sorted by flag severity.
+
+    wait_for_ai=False: cards whose AI brief isn't cached yet render without it
+    (the background warmup is producing them) instead of blocking the page.
+    """
 
     section_title(
         "סקירה יומית ועדכוני אנליסטים",
         "עדכון מהיר לכל מניה בתיק — מחיר, אנליסטים, דגלים וביצועים",
     )
 
-    tickers = all_tickers(portfolio)
+    tickers = active_tickers(portfolio)  # held + starred (archive tier has no brief)
     if not tickers:
         st.info("הוסף ניירות ערך לתיק.")
         return
@@ -385,7 +396,7 @@ def render_daily_brief(
     )
 
     # Compute all flag statuses once (used for sorting and per-card rendering)
-    all_flags = get_all_flag_statuses(portfolio, data)
+    all_flags = data.get("_flags") or get_all_flag_statuses(portfolio, data)
 
     # VOO history (for alpha calculation)
     prices     = data.get("prices", {})
@@ -397,9 +408,15 @@ def render_daily_brief(
 
     # Pre-warm all AI briefs in parallel — turns ~30 s sequential into ~6 s parallel.
     # Cache hits from @st.cache_data make the card loop itself near-instant.
-    if claude_api_key:
+    ready = None  # None = every card may call Claude
+    if claude_api_key and wait_for_ai:
         with st.spinner("🤖 מכין סיכומי AI במקביל..."):
             _warm_all_briefs(sorted_tickers, data, all_flags, voo_history, td_str, claude_api_key)
+    elif claude_api_key:
+        ready = {t for t in sorted_tickers if ai.is_done("brief", t, td_str)}
+        pending = [t for t in sorted_tickers if t not in ready and t not in PORTFOLIO_ETFS]
+        if pending:
+            st.caption(HE["ai_preparing"])
 
     # Two-column layout
     col_left, col_right = st.columns([1, 1])
@@ -412,5 +429,5 @@ def render_daily_brief(
                 all_flags=all_flags,
                 voo_history=voo_history,
                 td_str=td_str,
-                claude_api_key=claude_api_key,
+                claude_api_key=claude_api_key if ready is None or ticker in ready else "",
             )

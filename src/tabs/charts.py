@@ -1,5 +1,6 @@
 """Charts tab — 1-year candlestick with RSI, MAs, Bollinger, Volume, relative strength."""
 
+import contextlib
 
 import numpy as np
 import pandas as pd
@@ -16,9 +17,16 @@ from src.config import (
     is_tase_numeric,
 )
 from src.data.prices import get_intraday_data
-from src.data.technicals import bollinger, compute_macd, compute_relative_strength, compute_rsi, sma
-from src.portfolio import all_tickers
-from src.ui_helpers import color_legend, section_title, term_glossary
+from src.data.technicals import (
+    bollinger,
+    compute_fibonacci_levels,
+    compute_macd,
+    compute_relative_strength,
+    compute_rsi,
+    sma,
+)
+from src.portfolio import active_tickers, all_tickers
+from src.ui_helpers import color_legend, esc, section_title, term_glossary
 
 # ── Chart-building helpers ────────────────────────────────────────────────────
 
@@ -292,7 +300,7 @@ def _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key):
     consensus    = data["consensus"]
     fundamentals = data.get("fundamentals", {})
     news         = data.get("news", {})
-    tickers      = sorted(all_tickers(portfolio))
+    tickers      = active_tickers(portfolio)  # same key as the analysts tab → one shared call
 
     st.divider()
     st.markdown(
@@ -307,7 +315,7 @@ def _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key):
 
     with tab_session:
         if not claude_api_key:
-            st.caption("🤖 הוסף CLAUDE_API_KEY לקובץ secrets.toml לקבלת ניתוח סשן AI")
+            st.caption("🤖 הוסף ANTHROPIC_API_KEY לקובץ secrets.toml לקבלת ניתוח סשן AI")
         else:
             prompt_body = _build_session_prompt(tickers, data)
             tickers_key = ",".join(tickers)
@@ -327,11 +335,11 @@ def _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key):
                         f'<div dir="rtl" style="background:#0d1117;border:1px solid #1f2937;'
                         f'border-radius:8px;padding:14px 16px;font-size:12px;line-height:2.0">'
                         f'<div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:8px">'
-                        f'{sel}&nbsp;<span style="color:{pc};font-size:11px">● עדיפות {P_HE.get(priority, priority)}</span></div>'
-                        f'<div><span style="color:#888">קטליזטור:</span> {entry.get("catalyst", "—")}</div>'
-                        f'<div><span style="color:#888">תנועת מחיר:</span> {entry.get("premarket", "—")}</div>'
-                        f'<div style="font-family:monospace"><span style="color:#888">מפתחות:</span> {entry.get("levels", "—")}</div>'
-                        f'<div><span style="color:#888">סטאפ:</span> {entry.get("setup", "—")}</div>'
+                        f'{esc(sel)}&nbsp;<span style="color:{pc};font-size:11px">● עדיפות {esc(P_HE.get(priority, priority))}</span></div>'
+                        f'<div><span style="color:#888">קטליזטור:</span> {esc(entry.get("catalyst", "—"))}</div>'
+                        f'<div><span style="color:#888">תנועת מחיר:</span> {esc(entry.get("premarket", "—"))}</div>'
+                        f'<div style="font-family:monospace"><span style="color:#888">מפתחות:</span> {esc(entry.get("levels", "—"))}</div>'
+                        f'<div><span style="color:#888">סטאפ:</span> {esc(entry.get("setup", "—"))}</div>'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
@@ -342,7 +350,7 @@ def _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key):
                     st.caption(f"אין נתוני סשן עבור {sel}")
 
     with tab_timing:
-        all_flags = get_all_flag_statuses(portfolio, data)
+        all_flags = data.get("_flags") or get_all_flag_statuses(portfolio, data)
         sig = _compute_buy_signal(sel, data, all_flags)
         _render_score_bar(sig["score"], f"ציון תזמון קנייה — {sel}")
         _render_signal_chips(sig)
@@ -381,7 +389,17 @@ def _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key):
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def render_charts(portfolio, data, td_str="", claude_api_key=""):
+CHART_SECTIONS    = ("chart", "mc", "analyst")   # מניה tab
+PRACTICE_SECTIONS = ("orb", "trailing")          # תרגול tab
+
+
+def render_charts(portfolio, data, td_str="", claude_api_key="", sections=CHART_SECTIONS):
+    """Ticker picker + the selected sections for the chosen ticker.
+
+    sections: any of "chart" (candlestick + relative strength), "mc" (Monte Carlo),
+    "analyst" (per-ticker AI/consensus/news), "orb", "trailing". The picker
+    selection is shared, so switching between מניה and תרגול keeps the ticker.
+    """
     prices  = data["prices"]
     targets = data["targets"]
 
@@ -446,6 +464,10 @@ def render_charts(portfolio, data, td_str="", claude_api_key=""):
                         st.rerun()
 
     with main_col:
+        if "chart" not in sections:
+            _render_sections_without_chart(sel, portfolio, data, td_str, claude_api_key, sections)
+            return
+
         # ── Indicator checkboxes ──────────────────────────────────────────
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         show_sma20  = c1.checkbox("SMA 20",    value=False, key="ch_sma20")
@@ -533,14 +555,22 @@ def render_charts(portfolio, data, td_str="", claude_api_key=""):
         term_glossary(glossary_terms)
 
         _render_relative_strength(sel, p, prices)
+        _render_sections_without_chart(sel, portfolio, data, td_str, claude_api_key, sections)
+
+
+def _render_sections_without_chart(sel, portfolio, data, td_str, claude_api_key, sections):
+    """Everything below the candlestick, in a fixed order, filtered by `sections`."""
+    prices, targets = data["prices"], data["targets"]
+    if "orb" in sections:
         _render_orb_chart(sel)
         st.divider()
+    if "mc" in sections:
         _render_monte_carlo_section(sel, prices, targets)
         st.divider()
+    if "trailing" in sections:
         _render_trailing_stop_section(sel, prices)
-
-        if not is_tase_numeric(sel):
-            _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key)
+    if "analyst" in sections and not is_tase_numeric(sel):
+        _render_per_ticker_analyst(sel, portfolio, data, td_str, claude_api_key)
 
 
 # ── ORB: Opening Range Breakout (Python / Plotly) ─────────────────────────────
@@ -836,12 +866,17 @@ def _render_orb_chart(sel):
 
 # ── Monte Carlo simulation ────────────────────────────────────────────────────
 
-def _run_mc(close_series, current_price, n_sims, n_days):
-    """GBM Monte Carlo simulation. Returns (n_sims, n_days+1) price-path array."""
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
+def _run_mc(close_series, current_price, n_sims, n_days, seed=42):
+    """GBM Monte Carlo simulation. Returns (n_sims, n_days+1) price-path array.
+
+    Seeded and cached: the same inputs give the same fan chart and KPI cards on
+    every rerun (an unseeded draw made the numbers change on each click).
+    """
     log_ret = np.log(close_series / close_series.shift(1)).dropna()
     mu      = log_ret.mean()
     sigma   = log_ret.std()
-    Z       = np.random.standard_normal((n_sims, n_days))
+    Z       = np.random.default_rng(seed).standard_normal((n_sims, n_days))
     paths   = np.empty((n_sims, n_days + 1))
     paths[:, 0] = current_price
     for t in range(1, n_days + 1):
@@ -914,7 +949,7 @@ def _build_mc_figure(close_series, paths, ticker, n_days,
 
     # Sample paths (thin, semi-transparent)
     if show_sample_paths:
-        sample_idx = np.random.choice(
+        sample_idx = np.random.default_rng(7).choice(
             paths.shape[0], size=min(8, paths.shape[0]), replace=False
         )
         for i in sample_idx:
@@ -1181,14 +1216,260 @@ def _trailing_stop_stats(df: "pd.DataFrame") -> dict:
     }
 
 
+_FIB_COLORS = {
+    0.0:   "#888888",
+    0.236: "#5b9bd5",
+    0.382: "#f59e0b",
+    0.5:   "#facc15",
+    0.618: "#22c55e",
+    0.786: "#f87171",
+    1.0:   "#888888",
+}
+
+
+# ── Volume Profile S/R ────────────────────────────────────────────────────────
+
+def _compute_volume_sr(ohlcv, n_bins=25, hvn_ratio=1.35, cluster_pct=0.02):
+    # type: (pd.DataFrame, int, float, float) -> list
+    """
+    Build a Volume Profile and return High Volume Nodes (HVN) as S/R levels.
+    Returns [(price_level, strength_0_to_1), ...], sorted by price.
+    """
+    lo = float(ohlcv["Low"].min())
+    hi = float(ohlcv["High"].max())
+    if hi <= lo:
+        return []
+
+    edges       = np.linspace(lo, hi, n_bins + 1)
+    vol_at_bin  = np.zeros(n_bins)
+
+    for _, row in ohlcv.iterrows():
+        bar_lo  = float(row["Low"])
+        bar_hi  = float(row["High"])
+        bar_vol = float(row.get("Volume") or 0)
+        if bar_vol <= 0 or bar_hi <= bar_lo:
+            continue
+        bar_span = bar_hi - bar_lo
+        lo_b = max(0, int(np.searchsorted(edges, bar_lo, "left")) - 1)
+        hi_b = min(n_bins, int(np.searchsorted(edges, bar_hi, "right")))
+        for b in range(lo_b, hi_b):
+            overlap = min(bar_hi, edges[b + 1]) - max(bar_lo, edges[b])
+            if overlap > 0:
+                vol_at_bin[b] += bar_vol * overlap / bar_span
+
+    avg_vol = float(vol_at_bin.mean())
+    if avg_vol == 0:
+        return []
+
+    candidates = [
+        ((edges[b] + edges[b + 1]) / 2.0, vol_at_bin[b])
+        for b in range(n_bins)
+        if vol_at_bin[b] >= avg_vol * hvn_ratio
+    ]
+    if not candidates:
+        return []
+
+    # Cluster nearby levels so we don't draw 5 lines at the same price
+    candidates.sort(key=lambda x: x[0])
+    groups = [[candidates[0]]]
+    for price, vol in candidates[1:]:
+        ref = groups[-1][-1][0]
+        if ref > 0 and (price - ref) / ref <= cluster_pct:
+            groups[-1].append((price, vol))
+        else:
+            groups.append([(price, vol)])
+
+    max_vol = max(v for _, v in candidates)
+    result  = []
+    for grp in groups:
+        total  = sum(v for _, v in grp)
+        center = sum(p * v for p, v in grp) / total
+        result.append((center, total / max_vol))
+    return result
+
+
+# ── Swing-point trendlines ────────────────────────────────────────────────────
+
+def _compute_trendlines(ohlcv, window=5, n_points=4):
+    # type: (pd.DataFrame, int, int) -> tuple
+    """
+    Find swing highs/lows and fit a trendline through the most recent n_points of each.
+    Returns ((h_slope, h_intercept, h_start_i), (l_slope, l_intercept, l_start_i)).
+    Any inner tuple is (None, None, None) if there are not enough swing points.
+    """
+    n     = len(ohlcv)
+    highs = ohlcv["High"].values
+    lows  = ohlcv["Low"].values
+
+    sh = [
+        i for i in range(window, n - window)
+        if (highs[i] >= highs[max(0, i - window): i].max()
+            and highs[i] >= highs[i + 1: i + window + 1].max())
+    ]
+    sl = [
+        i for i in range(window, n - window)
+        if (lows[i] <= lows[max(0, i - window): i].min()
+            and lows[i] <= lows[i + 1: i + window + 1].min())
+    ]
+
+    def _fit(idx_list, vals):
+        if len(idx_list) < 2:
+            return None, None, None
+        pts = idx_list[-n_points:]
+        x   = np.array(pts, dtype=float)
+        y   = vals[pts]
+        slope, intercept = np.polyfit(x, y, 1)
+        return float(slope), float(intercept), pts[0]
+
+    return _fit(sh, highs), _fit(sl, lows)
+
+
+# ── Confluence scoring ────────────────────────────────────────────────────────
+
+def _compute_confluence_signals(df, sr_levels, sr_tol_pct=0.025):
+    # type: (pd.DataFrame, list, float) -> pd.DataFrame
+    """
+    Add _conf_score (int 0-4) and _conf_flags (list[str]) columns to df.
+
+    Conditions (1 pt each):
+      1  MA Stack bullish: fast_ma > slow_ma AND close > fast_ma
+      2  At S/R zone: within sr_tol_pct of any HVN price level
+      3  Volume surge: bar volume > 1.5× 20-bar rolling avg
+      4  Momentum reset: RSI[14] ∈ [28, 52]  OR  MACD bullish cross in last 3 bars
+    """
+    close    = df["Close"]
+    rsi_s    = compute_rsi(close)
+    macd_l, sig_l, _ = compute_macd(close)
+    avg_vol  = df["Volume"].rolling(20, min_periods=5).mean()
+    sr_prices = [p for p, _ in (sr_levels or [])]
+
+    scores, flags_list = [], []
+
+    for i in range(len(df)):
+        score = 0
+        flags = []
+
+        c    = float(close.iat[i])
+        fast = df["_fast_ma"].iat[i]
+        slow = df["_slow_ma"].iat[i]
+        vol  = float(df["Volume"].iat[i])
+        avgv = float(avg_vol.iat[i]) if not pd.isna(avg_vol.iat[i]) else 0.0
+        rsi  = float(rsi_s.iat[i])  if not pd.isna(rsi_s.iat[i])  else None
+        ml   = float(macd_l.iat[i]) if not pd.isna(macd_l.iat[i]) else None
+        sl_v = float(sig_l.iat[i])  if not pd.isna(sig_l.iat[i])  else None
+
+        # 1. MA Stack
+        if (not pd.isna(fast) and not pd.isna(slow) and fast > slow and c > fast):
+            score += 1
+            flags.append("MA Stack")
+
+        # 2. At S/R zone
+        for sp in sr_prices:
+            if sp > 0 and abs(c - sp) / sp <= sr_tol_pct:
+                score += 1
+                flags.append(f"S/R ${sp:.2f}")
+                break
+
+        # 3. Volume surge
+        if avgv > 0 and vol >= avgv * 1.5:
+            score += 1
+            flags.append("Volume")
+
+        # 4. Momentum reset: RSI in reset zone OR MACD bullish cross last 3 bars
+        macd_cross = False
+        if i >= 1 and ml is not None and sl_v is not None:
+            for j in range(max(1, i - 2), i + 1):
+                mj,  sj  = macd_l.iat[j],     sig_l.iat[j]
+                mj1, sj1 = macd_l.iat[j - 1], sig_l.iat[j - 1]
+                if (not (pd.isna(mj) or pd.isna(sj) or pd.isna(mj1) or pd.isna(sj1))
+                        and float(mj) > float(sj) and float(mj1) <= float(sj1)):
+                    macd_cross = True
+                    break
+
+        if (rsi is not None and 28 <= rsi <= 52) or macd_cross:
+            score += 1
+            if rsi is not None and 28 <= rsi <= 52:
+                flags.append(f"RSI {rsi:.0f}")
+            elif macd_cross:
+                flags.append("MACD×")
+
+        scores.append(score)
+        flags_list.append(flags)
+
+    df = df.copy()
+    df["_conf_score"] = scores
+    df["_conf_flags"] = flags_list
+    return df
+
+
+def _render_confluence_summary(df):
+    # type: (pd.DataFrame) -> None
+    """Confluence badge strip + expandable date list below the TS stats strip."""
+    if "_conf_score" not in df.columns:
+        return
+
+    last   = df.iloc[-1]
+    score  = int(last["_conf_score"])
+    flags  = last.get("_conf_flags") or []
+    if not isinstance(flags, list):
+        flags = []
+
+    conf_df = df[df["_conf_score"] >= 3]
+    score_color = "#fbbf24" if score >= 3 else "#fb923c" if score == 2 else "#6b7280"
+
+    chips = "".join(
+        f'<span style="background:#1e293b;color:#94a3b8;font-size:10px;'
+        f'padding:2px 9px;border-radius:4px;margin-right:4px">{f}</span>'
+        for f in flags
+    )
+    signal_line = (
+        f'<div style="font-size:10px;color:#fbbf24;margin-top:8px">'
+        f'⚡ {len(conf_df)} confluence bar{"s" if len(conf_df) != 1 else ""} in period</div>'
+        if not conf_df.empty else
+        '<div style="font-size:10px;color:#6b7280;margin-top:8px">'
+        'No confluence signals (≥3) found in period</div>'
+    )
+    st.markdown(
+        f'<div dir="ltr" style="background:#0f172a;border:1px solid #1e293b;'
+        f'border-radius:8px;padding:12px 16px;margin-top:10px">'
+        f'<div style="font-size:11px;font-weight:700;color:#00cf8d;margin-bottom:8px">'
+        f'🎯 Confluence — Latest Bar</div>'
+        f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+        f'<div style="font-size:22px;font-weight:900;color:{score_color}">{score}/4</div>'
+        f'{chips}</div>'
+        f'{signal_line}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not conf_df.empty:
+        with st.expander(f"📋 {len(conf_df)} confluence bars — most recent first"):
+            for date, row in conf_df.iloc[::-1].head(10).iterrows():
+                fs = row.get("_conf_flags") or []
+                if not isinstance(fs, list):
+                    fs = []
+                sc = int(row["_conf_score"])
+                st.markdown(
+                    f'<div dir="ltr" style="font-size:11px;color:#94a3b8;padding:3px 0">'
+                    f'<span style="color:#fbbf24;font-weight:700">{date.strftime("%b %d, %Y")}</span>'
+                    f' — Score {sc}/4 — {" | ".join(fs) if fs else "—"}</div>',
+                    unsafe_allow_html=True,
+                )
+
+
 def _build_trailing_stop_figure(
-    df: "pd.DataFrame",
-    ticker: str,
-    n_bars: int,
-    fast_ma: int,
-    slow_ma: int,
-    show_stop: bool,
-) -> go.Figure:
+    df,            # type: pd.DataFrame
+    ticker,        # type: str
+    n_bars,        # type: int
+    fast_ma,       # type: int
+    slow_ma,       # type: int
+    show_stop,     # type: bool
+    fib_levels=None,       # type: Optional[dict]
+    sr_levels=None,        # type: Optional[list]
+    high_trendline=None,   # type: Optional[tuple]
+    low_trendline=None,    # type: Optional[tuple]
+    show_confluence=False, # type: bool
+):
+    # type: (...) -> go.Figure
     """
     Plotly candlestick chart with MA lines, color-coded trailing stop,
     and entry (triangle-up) / exit (square) markers.
@@ -1264,6 +1545,95 @@ def _build_trailing_stop_figure(
                 "line":   {"color": "#ffffff", "width": 1},
             },
         ))
+
+    if fib_levels:
+        for ratio, price in fib_levels.items():
+            color = _FIB_COLORS.get(ratio, "#aaaaaa")
+            label = f"Fib {ratio * 100:.1f}%  ${price:.2f}"
+            fig.add_shape(
+                type="line",
+                x0=df.index[0], x1=df.index[-1],
+                y0=price, y1=price,
+                line={"color": color, "width": 1, "dash": "dot"},
+            )
+            fig.add_annotation(
+                x=df.index[-1], y=price,
+                text=label,
+                showarrow=False,
+                xanchor="left",
+                font={"size": 9, "color": color},
+                bgcolor="rgba(0,0,0,0.55)",
+            )
+
+    # ── Volume-based S/R ─────────────────────────────────────────────────────
+    if sr_levels:
+        for sr_price, strength in sr_levels:
+            alpha  = max(0.35, min(0.85, float(strength)))
+            clr    = f"rgba(255,165,0,{alpha:.2f})"
+            lw     = 1.0 + strength * 1.2
+            fig.add_shape(
+                type="line",
+                x0=df.index[0], x1=df.index[-1],
+                y0=sr_price, y1=sr_price,
+                line={"color": clr, "width": lw, "dash": "dash"},
+            )
+            fig.add_annotation(
+                x=df.index[-1], y=sr_price,
+                text=f"Vol S/R  ${sr_price:.2f}",
+                showarrow=False,
+                xanchor="left",
+                font={"size": 9, "color": clr},
+                bgcolor="rgba(0,0,0,0.6)",
+            )
+
+    # ── Swing trendlines ──────────────────────────────────────────────────────
+    n_bars_df = len(df)
+    if high_trendline and high_trendline[0] is not None:
+        h_slope, h_intercept, h_start = high_trendline
+        h_y0 = h_slope * h_start + h_intercept
+        h_y1 = h_slope * (n_bars_df - 1) + h_intercept
+        fig.add_trace(go.Scatter(
+            x=[df.index[h_start], df.index[-1]],
+            y=[h_y0, h_y1],
+            mode="lines",
+            name="Trend Highs",
+            line={"color": "#f87171", "width": 1.8, "dash": "dot"},
+        ))
+
+    if low_trendline and low_trendline[0] is not None:
+        l_slope, l_intercept, l_start = low_trendline
+        l_y0 = l_slope * l_start + l_intercept
+        l_y1 = l_slope * (n_bars_df - 1) + l_intercept
+        fig.add_trace(go.Scatter(
+            x=[df.index[l_start], df.index[-1]],
+            y=[l_y0, l_y1],
+            mode="lines",
+            name="Trend Lows",
+            line={"color": "#4ade80", "width": 1.8, "dash": "dot"},
+        ))
+
+    # ── Confluence markers ────────────────────────────────────────────────────
+    if show_confluence and "_conf_score" in df.columns:
+        conf_bars = df[df["_conf_score"] >= 3]
+        if not conf_bars.empty:
+            hover_texts = [
+                f"Score {int(s)}/4<br>" + " | ".join(f if isinstance(f, list) else [])
+                for s, f in zip(conf_bars["_conf_score"], conf_bars["_conf_flags"])
+            ]
+            fig.add_trace(go.Scatter(
+                x=conf_bars.index,
+                y=conf_bars["Low"] * 0.992,
+                mode="markers",
+                name="Confluence ≥3",
+                marker={
+                    "symbol": "star",
+                    "size":   14,
+                    "color":  "#fbbf24",
+                    "line":   {"color": "#ffffff", "width": 0.5},
+                },
+                text=hover_texts,
+                hovertemplate="%{text}<extra>Confluence</extra>",
+            ))
 
     day_str = df.index[-1].strftime("%d/%m/%Y") if not df.empty else ""
     fig.update_layout(
@@ -1359,7 +1729,7 @@ def _render_trailing_stop_section(sel: str, prices: dict) -> None:
         )
 
     # ── Controls (no ticker selectbox — sel comes from Charts tab) ───────────
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     with c1:
         n_bars = st.slider("Lookback (bars)", min_value=1, max_value=10,
                            value=2, key="ts_nbars",
@@ -1372,9 +1742,21 @@ def _render_trailing_stop_section(sel: str, prices: dict) -> None:
         slow_ma = st.slider("MA איטי", min_value=20, max_value=200,
                             value=50, key="ts_slow",
                             help="MA הארוך — פילטר מגמה")
-    with c4:
-        st.markdown('<div style="margin-top:28px"></div>', unsafe_allow_html=True)
-        show_stop = st.checkbox("הצג Stop Line", value=True, key="ts_show_stop")
+
+    cx1, cx2, cx3, cx4, cx5, cx6 = st.columns(6)
+    show_stop = cx1.checkbox("Stop Line",          value=True,  key="ts_show_stop")
+    show_fib  = cx2.checkbox("📐 פיבונאצ'י",       value=True,  key="ts_show_fib")
+    show_vol_sr    = cx3.checkbox("📊 Volume S/R",  value=True,  key="ts_vol_sr",
+                                  help="קווי תמיכה/התנגדות לפי נפח מסחר — Volume Profile")
+    show_trendlines = cx4.checkbox("📈 Trend Lines", value=True, key="ts_trendlines",
+                                   help="קווי מגמה לפי Swing Highs ו-Swing Lows")
+    show_confluence = cx5.checkbox("🎯 Confluence",  value=True, key="ts_confluence",
+                                   help="מסמן ≥3 תנאים: MA Stack / S/R / נפח / מומנטום")
+    fib_months = (
+        cx6.slider("Fib חודשים", min_value=1, max_value=6, value=3, key="ts_fib_months",
+                   help="מספר החודשים האחרונים לחישוב רמות פיבונאצ'י")
+        if show_fib else None
+    )
 
     if fast_ma >= slow_ma:
         st.warning("⚠️ MA מהיר חייב להיות קטן מ-MA האיטי.")
@@ -1401,26 +1783,94 @@ def _render_trailing_stop_section(sel: str, prices: dict) -> None:
         st.warning(f"שגיאה בחישוב: {exc}")
         return
 
-    fig = _build_trailing_stop_figure(result_df, sel, n_bars, fast_ma, slow_ma, show_stop)
+    fib_levels = None
+    if show_fib and fib_months is not None:
+        fib_window = ohlcv.iloc[-(fib_months * 21):]
+        swing_high = float(fib_window["High"].max())
+        swing_low  = float(fib_window["Low"].min())
+        fib_levels = compute_fibonacci_levels(swing_high, swing_low)
+
+    # Volume S/R
+    sr_levels = _compute_volume_sr(ohlcv) if show_vol_sr else None
+
+    # Swing trendlines
+    high_tl, low_tl = (None, None)
+    if show_trendlines:
+        try:
+            high_tl, low_tl = _compute_trendlines(ohlcv)
+        except Exception:
+            high_tl, low_tl = None, None
+
+    # Confluence scoring (enriches result_df in-place replacement)
+    if show_confluence:
+        with contextlib.suppress(Exception):
+            result_df = _compute_confluence_signals(result_df, sr_levels or [])
+
+    fig = _build_trailing_stop_figure(
+        result_df, sel, n_bars, fast_ma, slow_ma, show_stop,
+        fib_levels=fib_levels,
+        sr_levels=sr_levels,
+        high_trendline=high_tl,
+        low_trendline=low_tl,
+        show_confluence=show_confluence,
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     stats = _trailing_stop_stats(result_df)
     _render_ts_stats(stats)
 
-    color_legend([
+    if show_confluence and "_conf_score" in result_df.columns:
+        _render_confluence_summary(result_df)
+
+    legend_items = [
         ("#00bcd4", f"SMA {fast_ma} — ממוצע נע מהיר (כניסה)"),
         ("#ff9800", f"SMA {slow_ma} — ממוצע נע איטי (מגמה)"),
         ("#F44336", f"Stop ראשוני ({n_bars}-bar) — לא הוזזה עדיין"),
         ("#4CAF50", f"Trailing Stop ({n_bars}-bar) — הוזזה למעלה"),
         ("#4CAF50", "▲ כניסה — חצייה SMA"),
         ("#F44336", "■ יציאה — סגירה מתחת ל-Stop"),
-    ])
+    ]
+    if show_vol_sr:
+        legend_items.append(("rgba(255,165,0,0.7)", "Vol S/R — קווי תמיכה/התנגדות (Volume Profile)"))
+    if show_trendlines:
+        legend_items += [
+            ("#f87171", "Trend Highs — קו מגמה שיאים"),
+            ("#4ade80", "Trend Lows — קו מגמה שפלים"),
+        ]
+    if show_confluence:
+        legend_items.append(("#fbbf24", "★ Confluence ≥3 — צירוף של 3+ אינדיקטורים"))
+    color_legend(legend_items)
 
-    term_glossary([
+    glossary = [
         ("Trailing Stop",   "עצירת הפסד שזזה בכיוון אחד (למעלה). מגנה על רווחים צבורים."),
         ("Lookback (bars)", f"N={n_bars} — מספר הנרות לאחור לחישוב Stop High/Low."),
         ("MA Cross Entry",  f"כניסה: SMA{fast_ma} חוצה מעל SMA{slow_ma} = מומנטום חיובי."),
         ("Stop ראשוני",     f"Low הנמוך ביותר של {n_bars} הנרות האחרונים בעת הכניסה."),
         ("Trailing",        f"בכל פעם שנשבר שיא חדש של {n_bars} נרות, Stop מוזז ל-Low החדש."),
         ("Win Rate",        "אחוז עסקאות רווחיות (סגירה מעל מחיר כניסה)."),
-    ])
+        ("פיבונאצ'י",       "רמות תמיכה/התנגדות לפי יחסי פיבונאצ'י (23.6%, 38.2%, 50%, 61.8%, 78.6%)."),
+        ("61.8% (יחס הזהב)", "הרמה החשובה ביותר — שכיחות ההיפוך הגבוהה ביותר."),
+    ]
+    if show_vol_sr:
+        glossary.append((
+            "Volume Profile S/R",
+            "מחיר שנסחר עם נפח גבוה מהממוצע (HVN — High Volume Node) פועל כתמיכה/התנגדות. "
+            "רמות עם אלפה גבוהה = קושי רב לפרוץ. רמות חלשות = פריצה קלה.",
+        ))
+    if show_trendlines:
+        glossary.append((
+            "Swing Trendlines",
+            "קו מגמה שיאים = עובר דרך Swing Highs האחרונים (שפל מקומי לפי חלון סביב כל נקודה). "
+            "קו מגמה שפלים = עובר דרך Swing Lows. הצטלבות = אזור מחיר קריטי.",
+        ))
+    if show_confluence:
+        glossary.append((
+            "Confluence ≥3 (כוכב זהב ★)",
+            "נקודה שבה מתקיימים ≥3 מבין 4 תנאים במקביל: "
+            "(1) MA Stack: fast>slow AND close>fast — מגמה ברורה; "
+            "(2) מחיר ≤2.5% מ-HVN — נגיעה בשטח ביקוש/היצע; "
+            "(3) נפח ≥1.5× ממוצע — אישור; "
+            "(4) RSI 28-52 (Reset Zone) או MACD cross. "
+            "3+ תנאים = צירוף (Confluence) = הסתברות גבוהה יותר להיפוך/המשך.",
+        ))
+    term_glossary(glossary)

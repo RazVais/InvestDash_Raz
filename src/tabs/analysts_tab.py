@@ -1,41 +1,57 @@
 """Analysts tab — daily analysis (merged יומי) + buy timing + consensus table + price targets + upgrades."""
 
+from concurrent.futures import ThreadPoolExecutor as _ThreadPool
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.config import COLOR, MAJOR_FIRMS, PORTFOLIO_ETFS, TICKER_NAMES
+from src import ai
+from src.config import COLOR, HE, MAJOR_FIRMS, PORTFOLIO_ETFS, TICKER_NAMES
 from src.data.damodaran import get_damodaran_sector_data, get_sector_benchmarks
 from src.data.technicals import bollinger, compute_rsi
 from src.data.technicals import sma as _sma
-from src.portfolio import all_tickers
-from src.tabs.analysis_tab import _safe_parse_json
-from src.tabs.daily_brief_tab import render_daily_brief
+from src.portfolio import active_tickers, all_tickers
 from src.tabs.red_flags import get_all_flag_statuses
-from src.ui_helpers import color_legend, section_title, term_glossary
+from src.ui_helpers import color_legend, esc, fmt_api_error, section_title, term_glossary
 
 
-def render_analysts(portfolio, data, td_str: str = "", claude_api_key: str = ""):
+def warm_buy_timing_evals(tickers, data, all_flags, td_str, claude_api_key):
+    """Pre-warm @st.cache_data buy-timing Claude evals for all portfolio tickers.
+
+    Called from a background daemon thread in dashboard.py so that by the time
+    the user opens the Analysts or Charts tab the evals are already cached.
+    """
+    if not claude_api_key:
+        return
+
+    non_etf = [t for t in tickers if t not in PORTFOLIO_ETFS]
+    if not non_etf:
+        return
+
+    def _warm_one(ticker):
+        try:
+            sig = _compute_buy_signal(ticker, data, all_flags)
+            signal_str = _build_timing_data_str(ticker, sig)
+            _run_buy_timing_eval(ticker, signal_str, td_str, claude_api_key)
+        except Exception:
+            pass
+
+    with _ThreadPool(max_workers=min(len(non_etf), 5)) as ex:
+        list(ex.map(_warm_one, non_etf))
+
+
+def render_analyst_views(portfolio, data, td_str="", claude_api_key=""):
+    """תיק → אנליסטים ותזמון: buy-timing ranking + consensus / targets / upgrades."""
     prices    = data["prices"]
     targets   = data["targets"]
     consensus = data["consensus"]
     upgrades  = data["upgrades"]
-    tickers   = sorted(all_tickers(portfolio))
+    tickers   = active_tickers(portfolio)
 
-    tab_daily, tab_timing, tab_consensus = st.tabs([
-        "📋 ניתוח יומי", "⏰ תזמון קנייה", "👥 קונצנזוס ואנליסטים",
-    ])
-
-    with tab_daily:
-        _render_daily_analysis(portfolio, prices, consensus, targets)
-        st.divider()
-        _render_session_analysis(portfolio, data, td_str, claude_api_key)
-        st.divider()
-        render_daily_brief(portfolio, data, td_str, claude_api_key)
-
+    tab_timing, tab_consensus = st.tabs(["⏰ תזמון קנייה", "👥 קונצנזוס ואנליסטים"])
     with tab_timing:
         _render_buy_timing_tab(portfolio, data, td_str, claude_api_key)
-
     with tab_consensus:
         _render_consensus_table(tickers, consensus, prices)
         st.divider()
@@ -220,76 +236,79 @@ def _build_session_prompt(tickers, data):
     return "\n".join(lines)
 
 
-@st.cache_data(ttl=3600)
-def _run_session_analysis(
-    tickers_key: str, prompt_body: str, td_str: str, claude_api_key: str
-) -> dict:
-    """
-    Call Claude Haiku to generate a morning session briefing for all portfolio tickers.
-    Returns {"stocks": [...], "market_context": "..."} or {"_error": "..."}.
-    """
+@st.cache_data(ttl=43200, show_spinner=False)
+def _session_cached(tickers_key: str, td_str: str, _prompt_body: str, _claude_api_key: str) -> dict:
+    """One Claude call per (ticker set, trading day). Raises on failure (never cached)."""
+    prompt_body = _prompt_body
+    prompt = (
+        "You are a professional equity trader generating a morning session briefing "
+        "for a personal US stock portfolio.\n\n"
+        f"Date: {td_str}\n\n"
+        f"{prompt_body}\n\n"
+        "Analyze each ticker for TODAY's US equity session and provide:\n"
+        "1. catalyst: Key news or technical driver (or 'No catalyst' if none)\n"
+        "2. premarket: Price action tone — strength/weakness and why (use change% + momentum)\n"
+        "3. levels: Most relevant support and resistance as 'R:$X S:$Y' "
+        "(derive from SMA50, SMA200, Bollinger bands, 52W high/low, analyst target)\n"
+        "4. setup: Most likely intraday setup — choose from: "
+        "ORB breakout / VWAP bounce / momentum continuation / mean reversion / "
+        "pullback entry / wait for signal\n"
+        "5. priority: High (strong catalyst + clear setup) / "
+        "Medium (some signal, unclear edge) / Low (no edge today)\n\n"
+        "CRITICAL RULES:\n"
+        "- Return ONLY a raw JSON object. No code fences, no backticks, no markdown.\n"
+        "- Max 12 words per field. English only.\n"
+        "- Sort stocks array: High priority first, then Medium, then Low.\n"
+        "- market_context: 2-3 sentences on today's overall session tone given macro data "
+        "and portfolio composition.\n\n"
+        'JSON: {"stocks":[{"ticker":"...","priority":"High|Medium|Low","catalyst":"...",'
+        '"premarket":"...","levels":"R:$X S:$Y","setup":"..."},...], '
+        '"market_context":"..."}'
+    )
+    text   = ai.ask(_claude_api_key, 4096, prompt, purpose="session")
+    parsed = ai.parse_json(text)
+    if parsed is None:
+        raise ai.AIError(f"JSON לא תקין: {text[:120]}")
+    if "stocks" not in parsed:
+        raise ai.AIError("Response missing 'stocks' key")
+    ai.mark_done("session", tickers_key, td_str)
+    return parsed
+
+
+def _run_session_analysis(tickers_key: str, prompt_body: str, td_str: str, claude_api_key: str) -> dict:
+    """Morning session briefing for the active tickers.
+    Returns {"stocks": [...], "market_context": "..."} or {"_error": "..."}."""
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=claude_api_key)
-        prompt = (
-            "You are a professional equity trader generating a morning session briefing "
-            "for a personal US stock portfolio.\n\n"
-            f"Date: {td_str}\n\n"
-            f"{prompt_body}\n\n"
-            "Analyze each ticker for TODAY's US equity session and provide:\n"
-            "1. catalyst: Key news or technical driver (or 'No catalyst' if none)\n"
-            "2. premarket: Price action tone — strength/weakness and why (use change% + momentum)\n"
-            "3. levels: Most relevant support and resistance as 'R:$X S:$Y' "
-            "(derive from SMA50, SMA200, Bollinger bands, 52W high/low, analyst target)\n"
-            "4. setup: Most likely intraday setup — choose from: "
-            "ORB breakout / VWAP bounce / momentum continuation / mean reversion / "
-            "pullback entry / wait for signal\n"
-            "5. priority: High (strong catalyst + clear setup) / "
-            "Medium (some signal, unclear edge) / Low (no edge today)\n\n"
-            "CRITICAL RULES:\n"
-            "- Return ONLY a raw JSON object. No code fences, no backticks, no markdown.\n"
-            "- Max 12 words per field. English only.\n"
-            "- Sort stocks array: High priority first, then Medium, then Low.\n"
-            "- market_context: 2-3 sentences on today's overall session tone given macro data "
-            "and portfolio composition.\n\n"
-            'JSON: {"stocks":[{"ticker":"...","priority":"High|Medium|Low","catalyst":"...",'
-            '"premarket":"...","levels":"R:$X S:$Y","setup":"..."},...], '
-            '"market_context":"..."}'
-        )
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_text = msg.content[0].text
-        # Detect truncation: if stop_reason is max_tokens the JSON is incomplete
-        if getattr(msg, "stop_reason", None) == "max_tokens":
-            return {"_error": "תגובת AI קוצצה (max_tokens) — לחץ 'נסה שוב'"}
-        text   = _strip_fences(raw_text)
-        parsed = _safe_parse_json(text)
-        if parsed is None:
-            return {"_error": f"JSON לא תקין: {text[:120]}"}
-        if "stocks" not in parsed:
-            return {"_error": "Response missing 'stocks' key"}
-        return parsed
+        with ai.key_lock("session", tickers_key, td_str):
+            return _session_cached(tickers_key, td_str, prompt_body, claude_api_key)
     except Exception as exc:
-        return {"_error": str(exc)[:200]}
+        return {"_error": fmt_api_error(exc)}
 
 
-def _render_session_analysis(portfolio, data, td_str, claude_api_key):
-    """Render Today's Session Analysis table in the ניתוח יומי sub-tab."""
+def _render_session_analysis(portfolio, data, td_str, claude_api_key, wait_for_ai=True):
+    """Render Today's Session Analysis table.
+
+    wait_for_ai=False (היום tab): if the background warmup hasn't produced today's
+    briefing yet, show a note instead of blocking the page on the Claude call.
+    """
     section_title(
         "📊 ניתוח סשן היום",
         "סיכום מוקדם — קטליזטורים, מפתחות, סטאפ פוטנציאלי ועדיפות לפי איכות ההזדמנות",
     )
 
     if not claude_api_key:
-        st.caption("🤖 הוסף CLAUDE_API_KEY לקובץ secrets.toml לקבלת ניתוח סשן AI")
+        st.caption("🤖 הוסף ANTHROPIC_API_KEY לקובץ secrets.toml לקבלת ניתוח סשן AI")
         return
 
-    tickers     = sorted(all_tickers(portfolio))
+    tickers     = active_tickers(portfolio)  # held + starred — keeps the prompt small
     prompt_body = _build_session_prompt(tickers, data)
     tickers_key = ",".join(tickers)
+
+    if not wait_for_ai and not ai.is_done("session", tickers_key, td_str):
+        st.caption(HE["ai_preparing"])
+        if st.button(HE["ai_check_again"], key="_session_refresh"):
+            st.rerun()
+        return
 
     with st.spinner("🤖 AI מנתח את הסשן..."):
         result = _run_session_analysis(tickers_key, prompt_body, td_str, claude_api_key)
@@ -297,8 +316,7 @@ def _render_session_analysis(portfolio, data, td_str, claude_api_key):
     if "_error" in result:
         st.warning(f"⚠️ {result['_error']}")
         if st.button("🔄 נסה שוב", key="_retry_session"):
-            _run_session_analysis.clear()
-            st.rerun()
+            st.rerun()  # failures are never cached — a rerun retries
         return
 
     stocks = result.get("stocks") or []
@@ -321,18 +339,18 @@ def _render_session_analysis(portfolio, data, td_str, claude_api_key):
 
     rows = ""
     for s in stocks:
-        ticker   = s.get("ticker", "")
+        ticker   = esc(s.get("ticker", ""))
         priority = s.get("priority", "Low")
         pc       = PRIORITY_COLOR.get(priority, COLOR["text_dim"])
-        ph       = PRIORITY_HE.get(priority, priority)
+        ph       = esc(PRIORITY_HE.get(priority, priority))
         rows += (
             f'<tr>'
             f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{ticker}</td>'
             f'<td style="{_TD};color:{pc};font-weight:700">{ph}</td>'
-            f'<td style="{_TD}">{s.get("catalyst", "—")}</td>'
-            f'<td style="{_TD}">{s.get("premarket", "—")}</td>'
-            f'<td style="{_TD};font-family:monospace;font-size:10px">{s.get("levels", "—")}</td>'
-            f'<td style="{_TD};color:#aaa">{s.get("setup", "—")}</td>'
+            f'<td style="{_TD}">{esc(s.get("catalyst", "—"))}</td>'
+            f'<td style="{_TD}">{esc(s.get("premarket", "—"))}</td>'
+            f'<td style="{_TD};font-family:monospace;font-size:10px">{esc(s.get("levels", "—"))}</td>'
+            f'<td style="{_TD};color:#aaa">{esc(s.get("setup", "—"))}</td>'
             f'</tr>'
         )
 
@@ -350,7 +368,7 @@ def _render_session_analysis(portfolio, data, td_str, claude_api_key):
     )
     st.markdown(html, unsafe_allow_html=True)
 
-    ctx = result.get("market_context", "")
+    ctx = esc(result.get("market_context", ""))
     if ctx:
         st.markdown(
             f'<div dir="rtl" style="margin-top:12px;padding:10px 14px;'
@@ -584,69 +602,55 @@ def _build_timing_data_str(ticker, sig):
     return " | ".join(parts)
 
 
-def _strip_fences(text: str) -> str:
-    """
-    Remove markdown code fences from an LLM response.
-    Handles: ```json / ```JSON / ``` with \n or \r\n line endings.
-    Applied before _safe_parse_json as an extra safety layer.
-    """
-    import re as _re
-    # Case-insensitive, strip language tag and any whitespace (including \r)
-    text = _re.sub(r"```[a-zA-Z]*[\r\n]*", "", text)
-    text = _re.sub(r"```[\r\n]*", "", text)
-    return text.strip()
+@st.cache_data(ttl=43200, show_spinner=False)
+def _buy_timing_cached(ticker: str, td_str: str, _signal_str: str, _claude_api_key: str) -> dict:
+    """One Claude verdict per (ticker, trading day). Raises on failure (never cached)."""
+    signal_str = _signal_str
+    prompt = (
+        f"Analyze the buy timing for stock {ticker} using this market data:\n"
+        f"{signal_str}\n\n"
+        "CRITICAL FORMATTING RULES:\n"
+        "1. Return ONLY a raw JSON object. Do NOT wrap it in markdown code fences "
+        "or backticks. No ``` before or after. No 'json' language tag.\n"
+        "2. ALL explanation values MUST be written in Hebrew (עברית).\n"
+        "3. Do not use quotation marks inside explanation values — "
+        "use dashes or parentheses instead.\n\n"
+        'Format: {"verdict":"...","catalyst":"...","entry_conditions":"...","time_horizon":"...",'
+        '"damodaran_view":"...","breitstein_view":"..."}\n\n'
+        "Rules:\n"
+        "- verdict: one of exactly: לא עכשיו / המתן / הזדמנות / חלון קנייה\n"
+        "- catalyst: 2 Hebrew sentences — what technical/fundamental signal creates the "
+        "opportunity now (Buffett/Lynch margin of safety perspective)\n"
+        "- entry_conditions: 2 Hebrew sentences — specific price level or trigger to watch "
+        "(RSI threshold, SMA crossover, price target level)\n"
+        "- time_horizon: one of exactly: קצר טווח (שבועות) / בינוני (1-3 חודשים) / "
+        "ארוך טווח (6+ חודשים)\n"
+        "- damodaran_view: 1 Hebrew sentence — is the stock cheap or expensive vs its "
+        "Damodaran sector P/E and EV/EBITDA benchmarks? Apply intrinsic value framework\n"
+        "- breitstein_view: 1 Hebrew sentence — technical trend: is this stock a leader or "
+        "laggard in its sector? Assess price vs moving averages, RSI momentum, relative "
+        "strength vs market. Apply Breitstein trend-following methodology"
+    )
+    text   = ai.ask(_claude_api_key, 900, prompt, purpose="buy_timing")
+    parsed = ai.parse_json(text)
+    if parsed is None:
+        raise ai.AIError(f"JSON לא תקין: {text[:120]}")
+    required = ("verdict", "catalyst", "entry_conditions", "time_horizon",
+                "damodaran_view", "breitstein_view")
+    missing = [k for k in required if k not in parsed]
+    if missing:
+        raise ai.AIError(f"חסרים שדות: {missing}")
+    ai.mark_done("buy_timing", ticker, td_str)
+    return parsed
 
 
-@st.cache_data(ttl=3600)
-def _run_buy_timing_eval(
-    ticker: str, signal_str: str, td_str: str, claude_api_key: str
-) -> dict:
-    """Call Claude Haiku for a buy timing verdict. Returns dict or {"_error": msg}."""
+def _run_buy_timing_eval(ticker: str, signal_str: str, td_str: str, claude_api_key: str) -> dict:
+    """Buy timing verdict for ticker (cached per trading day). Returns dict or {"_error": msg}."""
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=claude_api_key)
-        prompt = (
-            f"Analyze the buy timing for stock {ticker} using this market data:\n"
-            f"{signal_str}\n\n"
-            "CRITICAL FORMATTING RULES:\n"
-            "1. Return ONLY a raw JSON object. Do NOT wrap it in markdown code fences "
-            "or backticks. No ``` before or after. No 'json' language tag.\n"
-            "2. ALL explanation values MUST be written in Hebrew (עברית).\n"
-            "3. Do not use quotation marks inside explanation values — "
-            "use dashes or parentheses instead.\n\n"
-            'Format: {"verdict":"...","catalyst":"...","entry_conditions":"...","time_horizon":"...",'
-            '"damodaran_view":"...","breitstein_view":"..."}\n\n'
-            "Rules:\n"
-            "- verdict: one of exactly: לא עכשיו / המתן / הזדמנות / חלון קנייה\n"
-            "- catalyst: 2 Hebrew sentences — what technical/fundamental signal creates the "
-            "opportunity now (Buffett/Lynch margin of safety perspective)\n"
-            "- entry_conditions: 2 Hebrew sentences — specific price level or trigger to watch "
-            "(RSI threshold, SMA crossover, price target level)\n"
-            "- time_horizon: one of exactly: קצר טווח (שבועות) / בינוני (1-3 חודשים) / "
-            "ארוך טווח (6+ חודשים)\n"
-            "- damodaran_view: 1 Hebrew sentence — is the stock cheap or expensive vs its "
-            "Damodaran sector P/E and EV/EBITDA benchmarks? Apply intrinsic value framework\n"
-            "- breitstein_view: 1 Hebrew sentence — technical trend: is this stock a leader or "
-            "laggard in its sector? Assess price vs moving averages, RSI momentum, relative "
-            "strength vs market. Apply Breitstein trend-following methodology"
-        )
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=900,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text   = _strip_fences(msg.content[0].text)
-        parsed = _safe_parse_json(text)
-        if parsed is None:
-            return {"_error": f"JSON לא תקין: {text[:120]}"}
-        required = ("verdict", "catalyst", "entry_conditions", "time_horizon",
-                    "damodaran_view", "breitstein_view")
-        missing = [k for k in required if k not in parsed]
-        if missing:
-            return {"_error": f"חסרים שדות: {missing}"}
-        return parsed
+        with ai.key_lock("buy_timing", ticker, td_str):
+            return _buy_timing_cached(ticker, td_str, signal_str, claude_api_key)
     except Exception as exc:
-        return {"_error": str(exc)[:200]}
+        return {"_error": fmt_api_error(exc)}
 
 
 def _render_score_bar(score, label):
@@ -739,16 +743,16 @@ def _render_timing_ai_card(verdict_dict, ticker, data_str, td_str, claude_api_ke
     if "_error" in verdict_dict:
         st.warning(f"⚠️ {verdict_dict['_error']}")
         if st.button("🔄 נסה שוב", key=f"_retry_timing_{ticker}"):
-            _run_buy_timing_eval.clear()
-            st.rerun()
+            st.rerun()  # failures are never cached — a rerun retries
         return
 
-    v    = verdict_dict.get("verdict", "")
-    cat  = verdict_dict.get("catalyst", "")
-    ent  = verdict_dict.get("entry_conditions", "")
-    th   = verdict_dict.get("time_horizon", "")
-    dama = verdict_dict.get("damodaran_view", "")
-    brei = verdict_dict.get("breitstein_view", "")
+    # Claude output — escape before it reaches unsafe_allow_html
+    v    = esc(verdict_dict.get("verdict", ""))
+    cat  = esc(verdict_dict.get("catalyst", ""))
+    ent  = esc(verdict_dict.get("entry_conditions", ""))
+    th   = esc(verdict_dict.get("time_horizon", ""))
+    dama = esc(verdict_dict.get("damodaran_view", ""))
+    brei = esc(verdict_dict.get("breitstein_view", ""))
 
     rows = ""
     if cat:
@@ -808,13 +812,13 @@ def _render_buy_timing_tab(portfolio, data, td_str, claude_api_key):
             unsafe_allow_html=True,
         )
 
-    tickers = sorted(all_tickers(portfolio))
+    tickers = active_tickers(portfolio)
 
     # Pre-warm Damodaran cache (1 fetch per 7 days)
     get_damodaran_sector_data()
 
     # Compute flags + signals for all tickers
-    all_flags = get_all_flag_statuses(portfolio, data)
+    all_flags = data.get("_flags") or get_all_flag_statuses(portfolio, data)
     signals   = {t: _compute_buy_signal(t, data, all_flags) for t in tickers}
 
     # Sort by score descending
@@ -838,11 +842,14 @@ def _render_buy_timing_tab(portfolio, data, td_str, claude_api_key):
 
             if claude_api_key:
                 data_str = _build_timing_data_str(t, sig)
-                with st.spinner("🤖 AI מנתח..."):
-                    verdict = _run_buy_timing_eval(t, data_str, td_str, claude_api_key)
-                _render_timing_ai_card(verdict, t, data_str, td_str, claude_api_key)
+                # Only call Claude for verdicts already computed today (cache hit) or on click
+                if ai.is_done("buy_timing", t, td_str) or st.button(
+                        HE["ai_run"], key=f"_ai_timing_{t}"):
+                    with st.spinner("🤖 AI מנתח..."):
+                        verdict = _run_buy_timing_eval(t, data_str, td_str, claude_api_key)
+                    _render_timing_ai_card(verdict, t, data_str, td_str, claude_api_key)
             else:
-                st.caption("🤖 הוסף CLAUDE_API_KEY לקובץ secrets.toml לקבלת ניתוח AI")
+                st.caption("🤖 הוסף ANTHROPIC_API_KEY לקובץ secrets.toml לקבלת ניתוח AI")
 
 
 # ── Consensus Table ───────────────────────────────────────────────────────────

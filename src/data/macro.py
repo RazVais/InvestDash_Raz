@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import streamlit as st
 import yfinance as yf
 
-from src.config import COMMODITY_SYMBOLS, MACRO_SYMBOLS
+from src.config import COMMODITY_SYMBOLS, ILS_USD_FALLBACK, MACRO_SYMBOLS
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -64,25 +64,31 @@ def _fetch_one_commodity(args):
     return key, None
 
 
-@st.cache_data(ttl=86400 * 7)
 def get_ils_usd_rate():
     """Return ILS→USD conversion rate (multiply NIS value by this to get USD).
 
     Fetches USDILS=X from Yahoo Finance: close ≈ NIS per 1 USD (e.g. 2.94).
     Returns 1/rate so callers can simply do: usd = ils_value * get_ils_usd_rate().
-    TTL=7d — the shekel/dollar rate changes slowly enough for weekly refresh.
-    Falls back to 1/2.94 (≈0.3397) if the fetch fails.
+    A fetched rate is cached 7 days; on failure ILS_USD_FALLBACK is returned but
+    NOT cached, so the next run retries instead of using the fallback all week.
     """
     try:
-        hist = yf.Ticker("USDILS=X").history(period="5d")
-        if hist is not None and not hist.empty:
-            nis_per_usd = float(hist["Close"].dropna().iloc[-1])
-            if 2.0 < nis_per_usd < 10.0:  # sanity check
-                _log.info("ILS/USD rate fetched", extra={"nis_per_usd": round(nis_per_usd, 4)})
-                return 1.0 / nis_per_usd
+        return _ils_usd_cached()
     except Exception:
-        _log.warning("ILS/USD rate fetch failed — using fallback 0.3397")
-    return 0.3397  # 1 NIS ≈ 0.3397 USD as of 2026-05-01
+        _log.warning("ILS/USD rate fetch failed — using fallback", extra={"fallback": ILS_USD_FALLBACK})
+        return ILS_USD_FALLBACK
+
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _ils_usd_cached():
+    hist = yf.Ticker("USDILS=X").history(period="5d")
+    if hist is None or hist.empty:
+        raise RuntimeError("USDILS=X returned no data")
+    nis_per_usd = float(hist["Close"].dropna().iloc[-1])
+    if not 2.0 < nis_per_usd < 10.0:  # sanity check
+        raise RuntimeError(f"USDILS=X out of range: {nis_per_usd}")
+    _log.info("ILS/USD rate fetched", extra={"nis_per_usd": round(nis_per_usd, 4)})
+    return 1.0 / nis_per_usd
 
 
 @st.cache_data(ttl=86400 * 7)

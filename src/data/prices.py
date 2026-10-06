@@ -24,6 +24,7 @@ import streamlit as st
 import yfinance as yf
 
 from src.config import is_tase_numeric, tase_yf_symbol
+from src.data.batch import map_cached
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -229,15 +230,10 @@ def _process_one_ticker(t):
         price = float(close.iloc[-1])
         prev  = float(close.iloc[-2]) if len(close) > 1 else price
 
-        # Beta from yfinance .info (TASE tickers are handled separately)
-        beta = None
-        with _YF_INFO_SEM:
-            try:
-                info = yf.Ticker(yf_sym).info
-                beta = float(info.get("beta") or 1.0)
-            except Exception:
-                _log.warning("ticker .info unavailable", extra={"ticker": t})
-                beta = 1.0
+        # .info fields (beta, P/E, sector…) are merged in by merge_info() from the
+        # 7-day per-ticker get_info_snapshot() cache — see loader.load_all_data.
+        info = dict(_INFO_DEFAULTS)
+        beta = info["beta"]
 
         # Dividend yield + annual rate — computed from v8 dividend events (zero extra requests)
         div_yield, div_rate = 0.0, 0.0
@@ -264,20 +260,91 @@ def _process_one_ticker(t):
         _log.info("Fetched OHLCV", extra={"ticker": t, "source": source,
                                            "rows": len(ohlcv), "price": price})
         return t, {
-            "price":     price,
-            "change":    ((price - prev) / prev * 100) if prev else 0.0,
-            "beta":      beta,
-            "div_yield": div_yield,
-            "div_rate":  div_rate,
-            "ohlcv":     ohlcv,
-            "high_52w":  float(close.max()),
-            "low_52w":   float(close.min()),
-            "history":   close,
-            "currency":  "USD",
+            "price":          price,
+            "change":         ((price - prev) / prev * 100) if prev else 0.0,
+            "beta":           beta,
+            "div_yield":      div_yield,
+            "div_rate":       div_rate,
+            "ohlcv":          ohlcv,
+            "high_52w":       float(close.max()),
+            "low_52w":        float(close.min()),
+            "history":        close,
+            "currency":       "USD",
+            **{k: v for k, v in info.items() if k != "beta"},
         }, ""
     except Exception:
         _log.error("Ticker processing error", exc_info=True, extra={"ticker": t})
         return t, None, "error"
+
+
+# ── .info snapshot (beta + fundamentals) — 7-day per-ticker cache ────────────
+
+_INFO_DEFAULTS = {
+    "beta": 1.0, "analyst_target": None, "recommendation": "",
+    "pe": None, "forward_pe": None, "peg": None, "eps_ttm": None, "eps_next_y": None,
+    "pb": None, "ps": None, "debt_eq": None, "roe": None, "roa": None,
+    "short_float": None, "inst_own": None, "sector": "", "industry": "",
+    "market_cap": None, "div_yield_fv": None, "payout": None,
+}
+
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _info_one(t):
+    """yfinance .info fields for one ticker. Raises on failure (not cached).
+
+    Beta, valuation and sector move slowly; fetching them inside the 30-minute
+    price cache for every watch-only ticker made each cold load ~1 min under
+    Yahoo throttling.
+    """
+    if is_tase_numeric(t):
+        return dict(_INFO_DEFAULTS)
+    with _YF_INFO_SEM:
+        info = yf.Ticker(t).info
+    if not info or len(info) < 5:
+        raise RuntimeError("empty .info")
+    return {
+        "beta":           float(info.get("beta") or 1.0),
+        "pe":             info.get("trailingPE"),
+        "forward_pe":     info.get("forwardPE"),
+        "sector":         info.get("sector") or "",
+        "market_cap":     info.get("marketCap"),
+        "analyst_target": info.get("targetMeanPrice"),
+        "recommendation": info.get("recommendationKey") or "",
+        # Fundamentals (stored as raw values; formatted at display time)
+        "peg":            info.get("trailingPegRatio") or info.get("pegRatio"),
+        "eps_ttm":        info.get("trailingEps"),
+        "eps_next_y":     info.get("earningsGrowth"),         # decimal, e.g. 0.15
+        "short_float":    info.get("shortPercentOfFloat"),    # decimal
+        "inst_own":       info.get("heldPercentInstitutions"),  # decimal
+        "roe":            info.get("returnOnEquity"),          # decimal
+        "roa":            info.get("returnOnAssets"),          # decimal
+        "pb":             info.get("priceToBook"),
+        "ps":             info.get("priceToSalesTrailing12Months"),
+        "debt_eq":        info.get("debtToEquity"),           # yfinance: % form (e.g. 45.3)
+        "industry":       info.get("industry") or "",
+        "div_yield_fv":   info.get("dividendYield"),          # decimal
+        "payout":         info.get("payoutRatio"),            # decimal
+    }
+
+
+def get_info_snapshot(tickers):
+    """{ticker: .info fields} for the given tickers (7-day per-ticker cache)."""
+    return map_cached(_info_one, tickers, default=None, workers=3)
+
+
+def merge_info(prices, info_map):
+    """Overlay .info fields onto get_stock_data() entries in place (skips misses)."""
+    for t, info in (info_map or {}).items():
+        entry = prices.get(t)
+        if entry and info:
+            entry.update(info)
+    return prices
+
+
+def get_stock_data_with_info(tickers, trading_day):
+    """get_stock_data() + .info fields — for screens outside the main loader."""
+    prices = get_stock_data(tickers, trading_day)
+    return merge_info(prices, get_info_snapshot(tickers))
 
 
 # ── Main cached fetcher ────────────────────────────────────────────────────────
@@ -315,8 +382,10 @@ def get_intraday_data(ticker, interval="5m"):
     Fetch today's intraday OHLCV for a US-listed ticker.
     Index is converted to America/New_York timezone.
     TTL=300s (5 min) so the ORB chart refreshes frequently during market hours.
-    Returns a DataFrame or None on failure.
+    Returns a DataFrame or None on failure (and for TASE numeric IDs — US-session only).
     """
+    if is_tase_numeric(ticker):
+        return None
     _log.info("get_intraday_data", extra={"ticker": ticker, "interval": interval})
     try:
         df = yf.Ticker(ticker).history(period="1d", interval=interval, prepost=False)
@@ -384,13 +453,13 @@ def lookup_buy_price(ticker, buy_date, prices_dict):
         idx   = ohlcv.index
         if hasattr(idx, "tz") and idx.tz is not None:
             idx = idx.tz_localize(None)
-        future = idx[idx >= bd]
-        if len(future) > 0:
-            return float(ohlcv["Close"].iloc[list(idx).index(future[0])])
+        pos = idx.searchsorted(bd)  # first bar on/after buy_date (index is sorted)
+        if pos < len(idx):
+            return float(ohlcv["Close"].iloc[pos])
     return get_buy_price(ticker, buy_date)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400 * 30, show_spinner=False)  # historical closes don't change
 def get_buy_price(ticker, buy_date):
     """
     Return closing price on or just after buy_date.
@@ -400,7 +469,10 @@ def get_buy_price(ticker, buy_date):
     """
     _log.info("get_buy_price", extra={"ticker": ticker, "buy_date": buy_date})
     try:
-        yf_sym = tase_yf_symbol(ticker) if is_tase_numeric(ticker) else ticker
+        tase   = is_tase_numeric(ticker)
+        yf_sym = tase_yf_symbol(ticker) if tase else ticker
+        # Yahoo quotes .TA symbols in agorot (ILA); pymaya / portfolio values are NIS
+        scale  = 0.01 if tase else 1.0
         d      = pd.to_datetime(buy_date)
         end    = (d + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
         start  = d.strftime("%Y-%m-%d")
@@ -408,14 +480,14 @@ def get_buy_price(ticker, buy_date):
         # Primary: Yahoo v8 range
         s = _fetch_yahoo_v8_range(yf_sym, start, end)
         if s is not None and not s.empty:
-            return float(s.iloc[0])
+            return float(s.iloc[0]) * scale
 
         # Fallback: yfinance
         df = yf.Ticker(yf_sym).history(start=start, end=end, auto_adjust=True)
         if df is not None and not df.empty:
             close = df["Close"].dropna()
             if not close.empty:
-                return float(close.iloc[0])
+                return float(close.iloc[0]) * scale
 
         _log.warning("No buy price found", extra={"ticker": ticker, "buy_date": buy_date})
         return None

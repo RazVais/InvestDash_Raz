@@ -11,17 +11,17 @@ Evaluates every ticker from SUGGESTIONS not yet in portfolio,
 plus a custom-ticker search box for any other stock.
 """
 
-import json as _json
 from typing import Optional
 
 import streamlit as st
 
-from src.config import COLOR, SUGGESTIONS, TICKER_NAMES
+from src import ai
+from src.config import COLOR, HE, SUGGESTIONS, TICKER_NAMES
 from src.data.analysts import get_analyst_targets, get_consensus
 from src.data.fundamentals import FINVIZ_AVAILABLE, get_finviz_fundamentals
-from src.data.prices import get_stock_data
+from src.data.prices import get_stock_data_with_info
 from src.portfolio import all_tickers
-from src.ui_helpers import section_title
+from src.ui_helpers import esc, fmt_api_error, section_title
 
 # ── Filter definitions ────────────────────────────────────────────────────────
 
@@ -43,81 +43,59 @@ _RATING_TEXT_COLORS = {1: "#fff", 2: "#fff", 3: "#000", 4: "#000", 5: "#000"}
 _FILTER_KEYS = ("revenue_growth", "competitive_pos", "leadership", "market_timing", "risk_assessment")
 
 
-def _safe_parse_json(text: str) -> Optional[dict]:
-    """Extract and parse the first JSON object in text, tolerating minor formatting issues."""
-    import re
-    # Strip markdown code fences (```json ... ``` or ``` ... ```)
-    text = re.sub(r"```[a-z]*\n?", "", text).strip()
-    start = text.find("{")
-    end   = text.rfind("}") + 1
-    if start < 0 or end <= start:
-        return None
-    raw = text[start:end]
-    # Try direct parse first
-    try:
-        return _json.loads(raw)
-    except _json.JSONDecodeError:
-        pass
-    # Strip trailing commas before } or ] (common LLM mistake)
-    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
-    try:
-        return _json.loads(cleaned)
-    except _json.JSONDecodeError:
-        return None
+@st.cache_data(ttl=43200, show_spinner=False)
+def _five_filter_cached(ticker: str, td_str: str, _data_summary: str, _claude_api_key: str) -> dict:
+    """One 5-filter rating per (ticker, trading day). Raises on failure (never cached)."""
+    data_summary = _data_summary
+    prompt = (
+        f"Analyze stock {ticker} using the following market data:\n"
+        f"{data_summary}\n\n"
+        "CRITICAL: ALL explanation values MUST be written in Hebrew (עברית). "
+        "Do NOT write any explanation in English. "
+        "Return ONLY a JSON object — no text before or after it. "
+        "Do not use quotation marks inside explanation values.\n\n"
+        "Format:\n"
+        '{"revenue_growth":{"rating":3,"explanation":"טקסט בעברית"},'
+        '"competitive_pos":{"rating":3,"explanation":"טקסט בעברית"},'
+        '"leadership":{"rating":3,"explanation":"טקסט בעברית"},'
+        '"market_timing":{"rating":3,"explanation":"טקסט בעברית"},'
+        '"risk_assessment":{"rating":3,"explanation":"טקסט בעברית"}}\n\n'
+        "Rules:\n"
+        "- rating is an integer 1-5 (1=very poor, 5=excellent)\n"
+        "- explanation: EXACTLY 2 sentences in Hebrew only, no English words\n"
+        "- revenue_growth (Buffett/Lynch quantitative pillars): EPS and revenue growth trend, "
+        "ROE vs Buffett 15% threshold, PEG ratio vs growth rate, FCF alignment with net income\n"
+        "- competitive_pos (Buffett economic moat): brand power, switching costs, low-cost "
+        "producer advantage, pricing power; apply Lindy Effect — how long has this business "
+        "model survived, does it have durable competitive advantages?\n"
+        "- leadership (Lynch management & capital allocation): insider ownership / skin in the "
+        "game, capital allocation quality (share buybacks when undervalued vs Lynch diworseification "
+        "— buying unrelated companies), conservative guidance vs stock pumping, debt management\n"
+        "- market_timing (Buffett margin of safety): does the current price offer a 20-30% "
+        "discount to intrinsic value or analyst consensus target? Apply second-level thinking "
+        "(Howard Marks) — is the stock under-loved or priced for perfection?\n"
+        "- risk_assessment (Lynch red flags): high debt vs industry peers, growth only by "
+        "acquisition rather than organically, sector hype / media darling overvaluation, "
+        "constant share dilution, business model too complex to explain in 2 sentences"
+    )
+    text   = ai.ask(_claude_api_key, 1400, prompt, purpose="five_filter")
+    parsed = ai.parse_json(text)
+    if parsed is None:
+        raise ai.AIError(f"JSON לא תקין בתגובת AI: {text[:150]}")
+    missing = [k for k in _FILTER_KEYS if k not in parsed]
+    if missing:
+        raise ai.AIError(f"חסרים שדות בתגובה: {missing}")
+    ai.mark_done("five_filter", ticker, td_str)
+    return parsed
 
 
-@st.cache_data(ttl=3600)
 def _run_five_filter_eval(ticker: str, data_summary: str, td_str: str, claude_api_key: str) -> dict:
-    """Call Claude Haiku to rate 5 filters. Returns dict keyed by filter_key, or {"_error": msg}."""
+    """Rate 5 filters. Returns dict keyed by filter_key, or {"_error": msg}."""
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=claude_api_key)
-        prompt = (
-            f"Analyze stock {ticker} using the following market data:\n"
-            f"{data_summary}\n\n"
-            "CRITICAL: ALL explanation values MUST be written in Hebrew (עברית). "
-            "Do NOT write any explanation in English. "
-            "Return ONLY a JSON object — no text before or after it. "
-            "Do not use quotation marks inside explanation values.\n\n"
-            "Format:\n"
-            '{"revenue_growth":{"rating":3,"explanation":"טקסט בעברית"},'
-            '"competitive_pos":{"rating":3,"explanation":"טקסט בעברית"},'
-            '"leadership":{"rating":3,"explanation":"טקסט בעברית"},'
-            '"market_timing":{"rating":3,"explanation":"טקסט בעברית"},'
-            '"risk_assessment":{"rating":3,"explanation":"טקסט בעברית"}}\n\n'
-            "Rules:\n"
-            "- rating is an integer 1-5 (1=very poor, 5=excellent)\n"
-            "- explanation: EXACTLY 2 sentences in Hebrew only, no English words\n"
-            "- revenue_growth (Buffett/Lynch quantitative pillars): EPS and revenue growth trend, "
-            "ROE vs Buffett 15% threshold, PEG ratio vs growth rate, FCF alignment with net income\n"
-            "- competitive_pos (Buffett economic moat): brand power, switching costs, low-cost "
-            "producer advantage, pricing power; apply Lindy Effect — how long has this business "
-            "model survived, does it have durable competitive advantages?\n"
-            "- leadership (Lynch management & capital allocation): insider ownership / skin in the "
-            "game, capital allocation quality (share buybacks when undervalued vs Lynch diworseification "
-            "— buying unrelated companies), conservative guidance vs stock pumping, debt management\n"
-            "- market_timing (Buffett margin of safety): does the current price offer a 20-30% "
-            "discount to intrinsic value or analyst consensus target? Apply second-level thinking "
-            "(Howard Marks) — is the stock under-loved or priced for perfection?\n"
-            "- risk_assessment (Lynch red flags): high debt vs industry peers, growth only by "
-            "acquisition rather than organically, sector hype / media darling overvaluation, "
-            "constant share dilution, business model too complex to explain in 2 sentences"
-        )
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text   = msg.content[0].text.strip()
-        parsed = _safe_parse_json(text)
-        if parsed is None:
-            return {"_error": f"JSON לא תקין בתגובת AI: {text[:150]}"}
-        if all(k in parsed for k in _FILTER_KEYS):
-            return parsed
-        missing = [k for k in _FILTER_KEYS if k not in parsed]
-        return {"_error": f"חסרים שדות בתגובה: {missing}"}
+        with ai.key_lock("five_filter", ticker, td_str):
+            return _five_filter_cached(ticker, td_str, data_summary, claude_api_key)
     except Exception as exc:
-        return {"_error": str(exc)[:200]}
+        return {"_error": fmt_api_error(exc)}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -342,7 +320,7 @@ def _render_filter_cards(eval_result, claude_api_key):
         for col, (fkey, fname, ficon) in zip(cols, pair):
             fdata  = eval_result.get(fkey, {})
             rating = int(fdata.get("rating", 0)) if fdata else 0
-            expl   = fdata.get("explanation", "") if fdata else ""
+            expl   = esc(fdata.get("explanation", "")) if fdata else ""  # Claude output
             if not expl and not claude_api_key:
                 expl = no_key_msg
             total_score += rating
@@ -380,12 +358,15 @@ def _render_ticker_section(
 
         eval_result: dict = {}
         if claude_api_key:
-            eval_result = _run_five_filter_eval(ticker, _build_data_summary(ticker, p, con, tgt, fun), td_str, claude_api_key)
+            # Call Claude only for results already computed today (cache hit) or on click
+            if ai.is_done("five_filter", ticker, td_str) or st.button(
+                    HE["ai_run"], key=f"_ai_5f_{ticker}"):
+                eval_result = _run_five_filter_eval(
+                    ticker, _build_data_summary(ticker, p, con, tgt, fun), td_str, claude_api_key)
             if "_error" in eval_result:
                 st.warning(f"⚠️ שגיאת AI: {eval_result['_error']}")
                 if st.button("🔄 נסה שוב", key=f"_retry_{ticker}"):
-                    st.cache_data.clear()
-                    st.rerun()
+                    st.rerun()  # failures are never cached — a rerun retries
                 eval_result = {}
         else:
             st.info("הוסף `ANTHROPIC_API_KEY` לקובץ `.streamlit/secrets.toml` לקבלת ניתוח AI.")
@@ -408,7 +389,7 @@ def _fetch_candidate_data(candidates, td_str, api_key):
     """Batch-fetch prices/targets/consensus/fundamentals for all candidates."""
     tickers_tuple = tuple(sorted(s["ticker"] for s in candidates))
     with st.spinner("טוען נתוני שוק..."):
-        prices_all    = get_stock_data(tickers_tuple, td_str)
+        prices_all    = get_stock_data_with_info(tickers_tuple, td_str)
         targets_all   = get_analyst_targets(tickers_tuple, td_str)
         consensus_all = get_consensus(tickers_tuple, td_str, api_key)
         fund_all: dict = get_finviz_fundamentals(tickers_tuple, td_str) or {} if FINVIZ_AVAILABLE else {}
@@ -460,7 +441,7 @@ def _render_custom_ticker_section(owned, td_str, api_key, claude_api_key):
         st.warning(f"{custom} כבר בתיק שלך — השתמש בטאב 'אנליסטים' לניתוח מפורט.")
         return
     with st.spinner(f"מנתח את {custom}..."):
-        cp   = get_stock_data((custom,), td_str).get(custom)
+        cp   = get_stock_data_with_info((custom,), td_str).get(custom)
         ctgt = get_analyst_targets((custom,), td_str).get(custom)
         ccon = get_consensus((custom,), td_str, api_key).get(custom, {})
         cfun: Optional[dict] = None

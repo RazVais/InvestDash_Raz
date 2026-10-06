@@ -5,6 +5,7 @@ import time
 import streamlit as st
 
 from src.config import is_tase_numeric
+from src.data.batch import map_cached
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -42,26 +43,28 @@ _FIELDS = {
 }
 
 
-@st.cache_data(ttl=86400 * 7)
-def get_finviz_fundamentals(tickers, trading_day):
-    _log.info("get_finviz_fundamentals entry", extra={"tickers": list(tickers), "trading_day": trading_day})
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _finviz_one(t):
+    """Finviz snapshot for one ticker. Raises on fetch errors (not cached)."""
+    if is_tase_numeric(t):
+        return {}
+    try:
+        raw = fvf(t).ticker_fundament()
+    except Exception as exc:
+        # Finviz answers 403 when it blocks scrapers — expected, no traceback spam
+        _log.warning("Finviz fetch failed", extra={"ticker": t, "error": str(exc)[:120]})
+        raise
+    finally:
+        time.sleep(0.3)  # Finviz rate-limit — do not remove
+    mapped = {new: raw.get(orig, "-") for orig, new in _FIELDS.items()}
+    if not any(v not in ("-", None, "") for v in mapped.values()):
+        _log.warning("Finviz returned empty fundamentals for ticker", extra={"ticker": t})
+    return mapped
+
+
+def get_finviz_fundamentals(tickers, trading_day=None):
+    """{ticker: fundamentals dict}. Cached per ticker for 7 days; sequential for Finviz."""
     if not FINVIZ_AVAILABLE:
         _log.warning("finvizfinance not available; skipping fundamentals fetch")
         return {t: {} for t in tickers}
-
-    result = {}
-    for t in tickers:
-        if is_tase_numeric(t):
-            result[t] = {}
-            continue
-        try:
-            raw = fvf(t).ticker_fundament()
-            mapped = {new: raw.get(orig, "-") for orig, new in _FIELDS.items()}
-            if not any(v not in ("-", None, "") for v in mapped.values()):
-                _log.warning("Finviz returned empty fundamentals for ticker", extra={"ticker": t})
-            result[t] = mapped
-        except Exception:
-            _log.error("get_finviz_fundamentals failed for ticker", exc_info=True, extra={"ticker": t})
-            result[t] = {}
-        time.sleep(0.3)  # Finviz rate-limit — do not remove
-    return result
+    return map_cached(_finviz_one, tickers, default={}, workers=1)

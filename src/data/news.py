@@ -8,7 +8,8 @@ import xml.etree.ElementTree as ET
 import requests
 import streamlit as st
 
-from src.config import TICKER_BRIEFS, TICKER_NAMES
+from src import ai
+from src.config import TICKER_BRIEFS, TICKER_NAMES, is_tase_numeric
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -81,12 +82,27 @@ def get_news(tickers, trading_day, max_per=6):
         return dict(ex.map(_fetch_one_news, [(t, max_per) for t in tickers]))
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=43200, show_spinner=False)
+def _summarize_titles(ticker: str, titles: tuple, trading_day: str, _claude_api_key: str) -> str:
+    """One summary per distinct set of headlines. Raises on failure (never cached)."""
+    name = TICKER_NAMES.get(ticker, ticker)
+    joined = "\n".join(f"- {t}" for t in titles)
+    prompt = (
+        f"אתה אנליסט פיננסי. להלן כותרות החדשות מ-24 השעות האחרונות עבור {name} ({ticker}):\n\n"
+        f"{joined}\n\n"
+        f"כתוב סיכום תמציתי בעברית (2-3 משפטים) של ההתפתחויות המשמעותיות ביותר. "
+        f"התמקד בנושאים פיננסיים ועסקיים. היה ישיר וענייני."
+    )
+    text = ai.ask(_claude_api_key, 700, prompt, purpose="news_summary", allow_truncated=True)
+    if not text:
+        raise ai.AIError("empty summary")
+    return text
+
+
 def get_today_summary(ticker: str, articles: list, trading_day: str, claude_api_key: str) -> str:
     """
-    Use Claude API to summarize today's most important news for `ticker` in Hebrew.
-    Returns a Hebrew summary string, or "" if no key / no today's articles.
-    trading_day is used as cache key only.
+    Hebrew summary of the last 24h of headlines for `ticker` ('' if no key / no news / error).
+    Cached on the headline set, so it only re-runs when new headlines arrive.
     """
     if not claude_api_key:
         return ""
@@ -97,23 +113,9 @@ def get_today_summary(ticker: str, articles: list, trading_day: str, claude_api_
     if not recent:
         return ""
 
+    titles = tuple(a["title"] for a in recent[:8])
     try:
-        import anthropic  # lazy import — only required if key is present
-        name = TICKER_NAMES.get(ticker, ticker)
-        titles = "\n".join(f"- {a['title']}" for a in recent[:8])
-        prompt = (
-            f"אתה אנליסט פיננסי. להלן כותרות החדשות מ-24 השעות האחרונות עבור {name} ({ticker}):\n\n"
-            f"{titles}\n\n"
-            f"כתוב סיכום תמציתי בעברית (2-3 משפטים) של ההתפתחויות המשמעותיות ביותר. "
-            f"התמקד בנושאים פיננסיים ועסקיים. היה ישיר וענייני."
-        )
-        client = anthropic.Anthropic(api_key=claude_api_key)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return msg.content[0].text.strip()
+        return _summarize_titles(ticker, titles, trading_day, claude_api_key)
     except Exception:
         _log.warning("get_today_summary failed", exc_info=True, extra={"ticker": ticker})
         return ""
@@ -128,6 +130,8 @@ def get_company_profile(ticker: str, trading_day: str) -> dict:
     """
     profile = {"name": ticker, "sector": "", "industry": "",
                 "description": "", "website": "", "employees": None}
+    if is_tase_numeric(ticker):
+        return profile
     try:
         # Chart meta gives longName, exchange, currency (always available)
         r = requests.get(

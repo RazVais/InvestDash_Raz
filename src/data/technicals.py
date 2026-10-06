@@ -68,6 +68,15 @@ def compute_relative_strength(ticker_close, benchmark_close):
     return (t_ret / b_ret * 100).rename("rel_strength")
 
 
+_FIB_RATIOS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+
+
+def compute_fibonacci_levels(high: float, low: float) -> dict:
+    """Return {ratio: price} Fibonacci retracement levels between swing high and low."""
+    span = high - low
+    return {r: round(low + r * span, 4) for r in _FIB_RATIOS}
+
+
 def compute_correlation_matrix(prices_dict):
     """
     Build a correlation matrix from {ticker: close_series}.

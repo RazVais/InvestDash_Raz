@@ -1,12 +1,12 @@
 """Analyst data: price targets, consensus, upgrades/downgrades."""
 
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
 from src.config import is_tase_numeric
+from src.data.batch import map_cached
 from src.logger import get_logger
 
 _log = get_logger(__name__)
@@ -34,30 +34,31 @@ def _yf_except(exc, msg, **kw):
 
 # ── Price targets ─────────────────────────────────────────────────────────────
 
-def _fetch_one_target(t):
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _target_one(t):
+    """Analyst price targets for one ticker. Raises on fetch errors (not cached)."""
     if is_tase_numeric(t):
-        return t, None
+        return None
     try:
         tgt = yf.Ticker(t).analyst_price_targets
-        if tgt and tgt.get("mean") is not None:
-            return t, {
-                "mean":   tgt.get("mean"),
-                "low":    tgt.get("low"),
-                "high":   tgt.get("high"),
-                "median": tgt.get("median"),
-                "count":  tgt.get("numberOfAnalysts", 0),
-            }
-        _log.warning("No analyst price targets for ticker", extra={"ticker": t})
     except Exception as e:
         _yf_except(e, "get_analyst_targets failed for ticker", extra={"ticker": t})
-    return t, None
+        raise
+    if tgt and tgt.get("mean") is not None:
+        return {
+            "mean":   tgt.get("mean"),
+            "low":    tgt.get("low"),
+            "high":   tgt.get("high"),
+            "median": tgt.get("median"),
+            "count":  tgt.get("numberOfAnalysts", 0),
+        }
+    _log.warning("No analyst price targets for ticker", extra={"ticker": t})
+    return None
 
 
-@st.cache_data(ttl=86400 * 7)
-def get_analyst_targets(tickers, trading_day):
-    _log.info("get_analyst_targets entry", extra={"tickers": list(tickers), "trading_day": trading_day})
-    with ThreadPoolExecutor(max_workers=min(len(tickers), 6)) as ex:
-        return dict(ex.map(_fetch_one_target, tickers))
+def get_analyst_targets(tickers, trading_day=None):
+    """{ticker: targets or None}. Cached per ticker for 7 days (trading_day unused)."""
+    return map_cached(_target_one, tickers)
 
 
 # ── Upgrades / Downgrades ─────────────────────────────────────────────────────
@@ -70,23 +71,28 @@ _COL_MAP = {
 }
 
 
-def _fetch_one_upgrades(args):
-    t, cutoff = args
-    empty = pd.DataFrame(columns=["date", "firm", "action", "from_grade", "to_grade"])
+_UPG_COLS = ["date", "firm", "action", "from_grade", "to_grade"]
+
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _upgrades_one(t, lookback_days):
+    """Recent rating changes for one ticker. Raises on fetch errors (not cached)."""
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=lookback_days)
+    empty = pd.DataFrame(columns=_UPG_COLS)
     if is_tase_numeric(t):
-        return t, empty.copy()
+        return empty
     try:
         df = yf.Ticker(t).upgrades_downgrades
         if df is None or df.empty:
             _log.warning("No upgrades/downgrades data for ticker", extra={"ticker": t})
-            return t, empty.copy()
+            return empty
 
         df = df.reset_index()
         df.columns = [c.lower().replace(" ", "") for c in df.columns]
         df = df.rename(columns={c: _COL_MAP[c] for c in df.columns if c in _COL_MAP})
 
         if "date" not in df.columns:
-            return t, empty.copy()
+            return empty
 
         df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
         df = df.dropna(subset=["date"])
@@ -96,18 +102,16 @@ def _fetch_one_upgrades(args):
             if col not in df.columns:
                 df[col] = ""
 
-        return t, df[["date", "firm", "action", "from_grade", "to_grade"]].reset_index(drop=True)
+        return df[_UPG_COLS].reset_index(drop=True)
     except Exception as e:
         _yf_except(e, "get_upgrades_downgrades failed for ticker", extra={"ticker": t})
-        return t, empty.copy()
+        raise
 
 
-@st.cache_data(ttl=86400 * 7)
-def get_upgrades_downgrades(tickers, trading_day, lookback_days=180):
-    _log.info("get_upgrades_downgrades entry", extra={"tickers": list(tickers), "trading_day": trading_day})
-    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=lookback_days)
-    with ThreadPoolExecutor(max_workers=min(len(tickers), 6)) as ex:
-        return dict(ex.map(_fetch_one_upgrades, [(t, cutoff) for t in tickers]))
+def get_upgrades_downgrades(tickers, trading_day=None, lookback_days=180):
+    """{ticker: DataFrame of rating changes}. Cached per ticker for 7 days."""
+    return map_cached(_upgrades_one, tickers, lookback_days,
+                      default=pd.DataFrame(columns=_UPG_COLS))
 
 
 # ── Consensus ─────────────────────────────────────────────────────────────────
@@ -116,19 +120,22 @@ def _finnhub_client(api_key):
     return finnhub.Client(api_key=api_key)
 
 
-def _fetch_consensus_worker(args):
-    t, api_key = args
-    return t, _fetch_consensus_one(t, api_key)
+_NA_CONSENSUS = {"strong_buy": 0, "buy": 0, "hold": 0, "sell": 0,
+                 "strong_sell": 0, "total": 0, "label": "N/A"}
 
 
-@st.cache_data(ttl=86400 * 7)
-def get_consensus(tickers, trading_day, api_key=""):
-    _log.info("get_consensus entry", extra={"tickers": list(tickers), "trading_day": trading_day})
-    with ThreadPoolExecutor(max_workers=min(len(tickers), 6)) as ex:
-        return dict(ex.map(_fetch_consensus_worker, [(t, api_key) for t in tickers]))
+def get_consensus(tickers, trading_day=None, api_key=""):
+    """{ticker: consensus dict}. Cached per ticker for 7 days."""
+    return map_cached(_consensus_one, tickers, api_key, default=dict(_NA_CONSENSUS))
+
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _consensus_one(ticker, api_key):
+    return _fetch_consensus_one(ticker, api_key)
 
 
 def _fetch_consensus_one(ticker, api_key):
+    """Finnhub first, yfinance fallback. Raises if the fallback errored (not cached)."""
     if is_tase_numeric(ticker):
         return {"strong_buy": 0, "buy": 0, "hold": 0, "sell": 0,
                 "strong_sell": 0, "total": 0, "label": "N/A"}
@@ -174,6 +181,7 @@ def _fetch_consensus_one(ticker, api_key):
             }
     except Exception as e:
         _yf_except(e, "yfinance consensus fallback failed", extra={"ticker": ticker})
+        raise
 
     _log.warning("No consensus data available for ticker", extra={"ticker": ticker})
     return {"strong_buy": 0, "buy": 0, "hold": 0, "sell": 0,
@@ -198,7 +206,13 @@ def _consensus_label(sb, b, h, s, ss, total):
 @st.cache_data(ttl=86400 * 7)
 def get_eps_trend(ticker, trading_day):
     """Fetch EPS trend. yfinance 0.2.54+ removed .eps_trend; falls back to earnings_estimate."""
-    stock = yf.Ticker(ticker)
+    if is_tase_numeric(ticker):
+        return None
+    try:
+        stock = yf.Ticker(ticker)
+    except Exception:
+        _log.warning("get_eps_trend: Ticker() failed", extra={"ticker": ticker})
+        return None
     # Try new attribute name first
     for attr in ("earnings_estimate", "eps_trend"):
         try:
@@ -212,23 +226,22 @@ def get_eps_trend(ticker, trading_day):
 
 # ── Earnings calendar ─────────────────────────────────────────────────────────
 
-def _fetch_one_earnings(t):
-    try:
-        cal = yf.Ticker(t).calendar
-        if isinstance(cal, pd.DataFrame):
-            if "Earnings Date" in cal.index:
-                dates = cal.loc["Earnings Date"].dropna().tolist()
-                return t, pd.to_datetime(dates[0]) if dates else None
-        elif isinstance(cal, dict):
-            dates = cal.get("Earnings Date", [])
-            return t, pd.to_datetime(dates[0]) if dates else None
-    except Exception:
-        pass
-    return t, None
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _earnings_one(t):
+    """Next earnings date for one ticker. Raises on fetch errors (not cached)."""
+    if is_tase_numeric(t):
+        return None
+    cal = yf.Ticker(t).calendar
+    if isinstance(cal, pd.DataFrame):
+        if "Earnings Date" in cal.index:
+            dates = cal.loc["Earnings Date"].dropna().tolist()
+            return pd.to_datetime(dates[0]) if dates else None
+    elif isinstance(cal, dict):
+        dates = cal.get("Earnings Date", [])
+        return pd.to_datetime(dates[0]) if dates else None
+    return None
 
 
-@st.cache_data(ttl=86400 * 7)
-def get_earnings_dates(tickers, trading_day):
-    """Return {ticker: next_earnings_date or None}."""
-    with ThreadPoolExecutor(max_workers=min(len(tickers), 6)) as ex:
-        return dict(ex.map(_fetch_one_earnings, tickers))
+def get_earnings_dates(tickers, trading_day=None):
+    """Return {ticker: next_earnings_date or None}. Cached per ticker for 7 days."""
+    return map_cached(_earnings_one, tickers)

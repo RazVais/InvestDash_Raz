@@ -1,9 +1,35 @@
 """Shared UI helpers — section titles, color legends, term glossaries, treemap."""
 
+import html as _html
+from urllib.parse import urlparse
+
 import plotly.graph_objects as go
 import streamlit as st
 
 from src.config import COLOR, LAYER_COLORS, TICKER_NAMES
+
+# ── Escaping for unsafe_allow_html ────────────────────────────────────────────
+# Anything from outside the app (RSS headlines, Yahoo descriptions, Claude output)
+# must go through esc() / safe_url() before being placed in HTML.
+
+def esc(value) -> str:
+    """HTML-escape any value for safe insertion into markup (None → '')."""
+    if value is None:
+        return ""
+    return _html.escape(str(value), quote=True)
+
+
+def safe_url(url) -> str:
+    """Return an escaped http(s) URL, or '#' for anything else (javascript:, data:, …)."""
+    if not url:
+        return "#"
+    try:
+        scheme = urlparse(str(url).strip()).scheme.lower()
+    except Exception:
+        return "#"
+    if scheme not in ("http", "https"):
+        return "#"
+    return esc(str(url).strip())
 
 
 def section_title(title, subtitle=""):
@@ -130,6 +156,17 @@ def portfolio_treemap(portfolio: dict, prices: dict, height: int = 300) -> None:
         font={"color": "#ffffff"},
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+def fmt_api_error(exc: Exception) -> str:
+    """Return a user-friendly error string for Anthropic API exceptions."""
+    msg = str(exc).lower()
+    if "credit balance" in msg or ("invalid_request_error" in msg and "credit" in msg):
+        return (
+            "💳 Anthropic API credits exhausted — "
+            "top up at console.anthropic.com/settings/billing"
+        )
+    return str(exc)[:200]
 
 
 def term_glossary(terms, label="📖 מקרא מונחים"):

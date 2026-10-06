@@ -24,6 +24,7 @@ def tase_yf_symbol(ticker: str) -> str:
 # ── Paths ──────────────────────────────────────────────────────────────────────
 PROJECT_ROOT   = Path(__file__).parent.parent
 PORTFOLIO_FILE = PROJECT_ROOT / "portfolio.json"
+JOURNAL_FILE   = PROJECT_ROOT / "trading_journal_ai.json"
 
 # ── Portfolio layers ───────────────────────────────────────────────────────────
 TICKERS_BY_LAYER = {
@@ -252,6 +253,11 @@ FLAG_THRESHOLDS = {
         "major_sell_warn":     1,
         "major_sell_trigger":  2,
     },
+    # User stops / price alerts — 🟡 when price is within this % of the level
+    "_alerts": {
+        "stop_watch_pct":  3.0,
+        "price_watch_pct": 2.0,
+    },
 }
 
 MAJOR_FIRMS = {
@@ -265,6 +271,12 @@ MAJOR_FIRMS = {
 }
 
 SELL_GRADES = {"sell", "underperform", "underweight", "reduce"}
+
+# ── Claude ─────────────────────────────────────────────────────────────────────
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # every AI call in the app uses this
+
+# ── Currency ───────────────────────────────────────────────────────────────────
+ILS_USD_FALLBACK = 0.3397  # 1 NIS ≈ 0.3397 USD (2026-05-01); used only if USDILS=X fails
 
 # ── Macro symbols ──────────────────────────────────────────────────────────────
 MACRO_SYMBOLS = {
@@ -356,6 +368,88 @@ HE = {
     "days_to_earnings":  "ימים לדוח",
     "eps_beat":          "הכה תחזית",
     "eps_miss":          "פספס תחזית",
+    # Persistence / security
+    "load_failed":       "⚠️ טעינת התיק נכשלה — מוצג תיק ברירת מחדל. שמירה חסומה כדי לא לדרוס את הנתונים האמיתיים.",
+    "load_retry":        "🔄 נסה לטעון שוב",
+    "save_failed":       "⚠️ שמירה ל-Gist נכשלה — השינוי נשמר מקומית בלבד",
+    "save_blocked":      "השינוי לא נשמר: התיק לא נטען כראוי",
+    "pw_prompt":         "סיסמה",
+    "pw_wrong":          "סיסמה שגויה",
+    # Job-based navigation (v4.2)
+    "tab_today":         "היום",
+    "tab_holdings":      "תיק",
+    "tab_ticker":        "מניה",
+    "tab_practice":      "תרגול",
+    "sub_pnl":           "📊 רווח והפסד",
+    "sub_securities":    "📋 ניירות ערך",
+    "sub_analysts":      "👥 אנליסטים ותזמון",
+    "sub_visuals":       "🗺 תרשימי תיק",
+    "sub_stops":         "⚠️ עצירות והתראות",
+    "sub_chart":         "📈 ניתוח מניה",
+    "sub_ideas":         "💡 רעיונות",
+    "sub_setups":        "🎯 סטאפים (ORB / Trailing Stop)",
+    "sub_journal":       "📈 יומן עסקאות",
+    "sub_journal_ai":    "🤖 יומן AI",
+    "today_attention":   "דורש תשומת לב",
+    "today_attention_sub": "דגלים פעילים ודוחות רווחים בשבוע הקרוב",
+    "today_all_clear":   "🟢 אין דגלים פעילים ואין דוחות רווחים השבוע",
+    "today_earnings":    "דוח",
+    "today_earnings_today": "היום",
+    "today_days":        "ימים",
+    "today_flags_details": "🔔 לפרטי הדגלים",
+    # History / rebalancing / sizing (v4.3)
+    "sub_history":       "📉 ביצועים",
+    "sub_rebalance":     "⚖️ איזון",
+    "hist_title":        "ביצועי התיק לאורך זמן",
+    "hist_sub":          "תשואה משוקללת-זמן (הפקדות ומכירות אינן נספרות כרווח) מול VOO",
+    "hist_count":        "{real} תמונות מצב יומיות אמיתיות · {total} סה\"כ",
+    "hist_rebuild":      "🔁 שחזר שנה אחרונה",
+    "hist_rebuild_help": "משחזר ערכים יומיים מהלוטים הנוכחיים × היסטוריית מחירים. לא מחליף תמונות מצב אמיתיות",
+    "hist_rebuilt":      "נוספו {n} ימים משוחזרים",
+    "hist_none":         "אין עדיין מספיק היסטוריה — תמונת מצב נשמרת אוטומטית בכל יום מסחר",
+    "hist_since":        "מאז",
+    "hist_flow":         "הפקדה/משיכה",
+    "hist_1m":           "חודש",
+    "hist_3m":           "3 חודשים",
+    "hist_alpha_ytd":    "אלפא YTD",
+    "hist_maxdd":        "ירידה מקסימלית",
+    "hist_portfolio":    "תיק",
+    "hist_drawdown":     "ירידה מהשיא",
+    "hist_index_axis":   "מדד (100 = התחלה)",
+    "hist_reconstructed_note": "ימים משוחזרים מבוססים על הלוטים הנוכחיים — פוזיציות שנסגרו ושערי מטבע היסטוריים אינם נכללים",
+    "reb_title":         "איזון לפי שכבות",
+    "reb_sub":           "הקצאה נוכחית מול יעד, וכיצד לפרוס כסף חדש (קניות בלבד)",
+    "reb_empty":         "אין פוזיציות לאיזון",
+    "reb_target":        "יעד",
+    "reb_current":       "נוכחי",
+    "reb_drift":         "סטייה",
+    "reb_to_target":     "ליעד",
+    "reb_buy":           "קנה מכסף חדש",
+    "reb_new_cash":      "כסף חדש להשקעה ($)",
+    "reb_save":          "💾 שמור יעדים",
+    "reb_sum_warn":      "סכום היעדים {total:.0f}% — צריך להיות 100%",
+    "reb_note":          "\"ליעד\" = כמה לקנות (+) או למכור (−) כדי להגיע ליעד בלי כסף חדש. סטייה של 5pp ומעלה מסומנת באדום",
+    "size_title":        "📐 מחשבון גודל פוזיציה",
+    "size_account":      "שווי תיק ($)",
+    "size_risk":         "סיכון לעסקה (%)",
+    "size_entry":        "כניסה",
+    "size_stop":         "סטופ",
+    "size_invalid":      "הסטופ חייב להיות מתחת למחיר הכניסה",
+    "size_position":     "פוזיציה",
+    "size_at_risk":      "בסיכון",
+    "size_stop_dist":    "מרחק סטופ",
+    "alert_stop":        "סטופ לוס",
+    "alert_trailing":    "סטופ נגרר",
+    "alert_peak":        "שיא",
+    "alert_price":       "התראת מחיר",
+    "alert_stop_action": "בחינת יציאה / הקטנת פוזיציה",
+    "alert_price_action": "בדיקת הזדמנות / יעד הושג",
+    "ai_run":            "🤖 הרץ ניתוח AI",
+    "ai_preparing":      "⏳ ניתוח ה-AI של היום מוכן ברקע — יופיע בעוד רגע",
+    "ai_check_again":    "🔄 בדוק שוב",
+    "starred":           "⭐ במעקב מלא",
+    "star_help":         "מניות מסומנות מקבלות נתוני אנליסטים, חדשות וניתוח AI יומי — כמו מניות בתיק",
+    "journal_corrupt":   "⚠️ קובץ היומן פגום — נשמר עותק .bak. שמירה ביומן חסומה עד לתיקון הקובץ.",
 }
 
 # ── Stock suggestions (curated complementary picks) ───────────────────────────

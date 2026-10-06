@@ -25,54 +25,98 @@ def render_fundamentals(portfolio, data, td_str):
 
 
 def _render_valuation_table(tickers, fundamentals, prices):
-    section_title("נתוני פונדמנטלס", "נתוני הערכת שווי, רווחיות ומבנה ההון לפי Finviz")
+    section_title("נתוני פונדמנטלס", "נתוני הערכת שווי, רווחיות ומבנה ההון — Yahoo Finance (מתעדכן יומית)")
 
-    _TH = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:1px solid #333;font-size:11px;text-align:right"
-    _TD = "padding:5px 8px;font-size:11px"
+    _TH = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:1px solid #333;font-size:11px;text-align:right;white-space:nowrap"
+    _TD = "padding:5px 8px;font-size:11px;text-align:right"
 
-    cols1 = [("pe","P/E"), ("forward_pe","P/E קדימה"), ("peg","PEG"), ("pegy","PEGY"),
-             ("eps_ttm","EPS"), ("roe","ROE"), ("roa","ROA"), ("pb","P/B"), ("ps","P/S"), ("debt_eq","Debt/Eq")]
-    cols2 = [("market_cap","שווי שוק"), ("short_float","Short Float"), ("inst_own","מוסדי"),
-             ("sector","סקטור"), ("industry","תעשייה"), ("div_yield_fv","דיבידנד %")]
+    # P/E, Fwd P/E, Sector removed — already shown in the overview performance table.
+    cols1 = [("peg","PEG"), ("pegy","PEGY"), ("eps_ttm","EPS (TTM)"),
+             ("roe","ROE"), ("roa","ROA"), ("pb","P/B"), ("ps","P/S"), ("debt_eq","Debt/Eq")]
+    cols2 = [("market_cap","שווי שוק"), ("short_float","Short %"), ("inst_own","מוסדי %"),
+             ("industry","תעשייה"), ("div_yield_fv","דיבידנד %"), ("payout","Payout")]
 
-    def _peg_color(val_str: str) -> str:
-        """Green <1 (undervalued growth), yellow 1–2 (fair), red >2 (expensive)."""
-        try:
-            v = float(str(val_str).replace(",", ""))
-            if v <= 0:
-                return COLOR["text_dim"]
-            if v < 1.0:
-                return COLOR["positive"]
-            if v < 2.0:
-                return COLOR["warning"]
-            return COLOR["negative"]
-        except (ValueError, TypeError):
+    def _peg_color(v: float) -> str:
+        if v <= 0:
             return COLOR["text_dim"]
+        if v < 1.0:
+            return COLOR["positive"]
+        if v < 2.0:
+            return COLOR["warning"]
+        return COLOR["negative"]
 
-    def _compute_pegy(f: dict) -> str:
+    def _pf(key, raw) -> str:
+        """Format a raw yfinance .info value for display."""
+        if raw is None:
+            return "—"
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return str(raw) if raw else "—"
+
+        # Percentage fields (stored as decimal in yfinance)
+        if key in ("roe", "roa", "short_float", "inst_own", "div_yield_fv", "payout", "eps_next_y"):
+            if v == 0:
+                return "—"
+            return f"{v * 100:.2f}%"
+        # Debt/Eq: yfinance stores as % form (e.g. 45.3 = 45.3% D/E ratio → display as 0.45)
+        if key == "debt_eq":
+            if v == 0:
+                return "—"
+            return f"{v / 100:.2f}"
+        # Market cap
+        if key == "market_cap":
+            if v >= 1e12:
+                return f"${v/1e12:.2f}T"
+            if v >= 1e9:
+                return f"${v/1e9:.1f}B"
+            if v >= 1e6:
+                return f"${v/1e6:.0f}M"
+            return f"${v:,.0f}"
+        # PEG
+        if key in ("peg", "pegy"):
+            if v <= 0 or v > 100:
+                return "—"
+            return f"{v:.2f}"
+        # EPS
+        if key == "eps_ttm":
+            return f"${v:.2f}"
+        # Default numeric
+        if v == 0:
+            return "—"
+        return f"{v:.2f}"
+
+    def _compute_pegy(p: dict) -> float:
         """PEGY = P/E ÷ (EPS_growth% + div_yield%). Lynch: <1 = attractive."""
         try:
-            pe   = float(str(f.get("pe",  "")).replace(",", ""))
-            grow = float(str(f.get("eps_next_y", "")).replace("%", "").replace(",", ""))
-            dy   = float(str(f.get("div_yield_fv", "0")).replace("%", "").replace(",", ""))
-            denom = grow + dy
-            if pe <= 0 or denom <= 0:
-                return "—"
-            return f"{pe / denom:.2f}"
-        except (ValueError, TypeError):
-            return "—"
+            pe_val  = float(p.get("pe") or 0)
+            grow    = float(p.get("eps_next_y") or 0) * 100  # decimal → %
+            dy      = float(p.get("div_yield_fv") or 0) * 100
+            denom   = grow + dy
+            if pe_val <= 0 or denom <= 0:
+                return None
+            return pe_val / denom
+        except (TypeError, ValueError):
+            return None
 
     for title, cols in [("ערכים והכנסות", cols1), ("שוק ובעלות", cols2)]:
         st.markdown(f'<b style="direction:rtl">{title}</b>', unsafe_allow_html=True)
         rows = ""
         for t in tickers:
-            f = fundamentals.get(t, {})
-            # Inject computed PEGY into the fundamentals dict for this render
-            f = dict(f)
-            if t not in PORTFOLIO_ETFS:
-                f["pegy"] = _compute_pegy(f)
+            # Primary: prices dict (yfinance .info — daily cache)
+            # Fallback: Finviz fundamentals dict (weekly cache, may be empty)
+            p_info = prices.get(t) or {}
+            fv     = fundamentals.get(t) or {}
+
+            def _get(key, p_info=p_info, fv=fv):
+                """Prefer prices/.info, fall back to Finviz string."""
+                raw = p_info.get(key)
+                if raw is not None:
+                    return _pf(key, raw)
+                fv_val = fv.get(key)
+                return fv_val if (fv_val and fv_val not in ("-", "")) else "—"
+
             if t in PORTFOLIO_ETFS:
-                # ETF: replace all data cells with a single spanning note
                 etf_note = (
                     f'<span style="color:{COLOR["text_dim"]};font-size:11px">'
                     f'ETF — אין נתוני פונדמנטלס (ללא רווחים עצמיים, ללא הון עצמי)</span>'
@@ -82,14 +126,21 @@ def _render_valuation_table(tickers, fundamentals, prices):
                     f'<td colspan="{len(cols)}" style="{_TD}">{etf_note}</td>'
                 )
             else:
+                # Compute PEGY from prices data
+                pegy_val = _compute_pegy(p_info)
                 row = f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
                 for key, _ in cols:
-                    val = f.get(key, "—")
-                    # Color PEG and PEGY
-                    if key in ("peg", "pegy") and val and val != "—":
-                        color = _peg_color(val)
-                        val = f'<span style="color:{color};font-weight:700">{val}</span>'
-                    row += f'<td style="{_TD}">{val}</td>'
+                    if key == "pegy":
+                        val_str = _pf("pegy", pegy_val)
+                    else:
+                        val_str = _get(key)
+                    if key in ("peg", "pegy") and val_str != "—":
+                        try:
+                            fc = _peg_color(float(val_str))
+                            val_str = f'<span style="color:{fc};font-weight:700">{val_str}</span>'
+                        except (ValueError, TypeError):
+                            pass
+                    row += f'<td style="{_TD}">{val_str}</td>'
             rows += f"<tr>{row}</tr>"
 
         header_cells = (
@@ -105,20 +156,19 @@ def _render_valuation_table(tickers, fundamentals, prices):
         st.markdown(html, unsafe_allow_html=True)
         st.write("")
     term_glossary([
-        ("P/E",         "Price-to-Earnings — מחיר המניה חלקי הרווח למניה (EPS). P/E גבוה = ציפיות צמיחה גבוהות. S&P500 ממוצע ≈ 20–25."),
-        ("P/E קדימה",   "Forward P/E — מחיר המניה חלקי תחזית הרווח ל-12 חודשים הבאים. נמוך מ-P/E ההיסטורי = צמיחה צפויה."),
         ("PEG",         "Price/Earnings-to-Growth (Lynch) — P/E חלקי קצב צמיחת הרווח השנתי. מתחת 1 = צמיחה זולה 🟢, 1–2 = הוגן 🟡, מעל 2 = יקר 🔴."),
         ("PEGY",        "PEG + Yield (Lynch) — P/E חלקי (צמיחה% + תשואת דיבידנד%). מתאים לחברות שמחלקות דיבידנד — מתחת 1 = אטרקטיבי."),
-        ("EPS",         "Earnings Per Share (TTM) — רווח למניה ב-12 חודשים האחרונים (Trailing Twelve Months)."),
+        ("EPS (TTM)",   "Earnings Per Share — רווח למניה ב-12 חודשים האחרונים (Trailing Twelve Months)."),
         ("ROE",         "Return on Equity — תשואה על ההון העצמי. מעל 15% = ניהול הון יעיל. מדד חשוב לרווחיות."),
         ("ROA",         "Return on Assets — תשואה על הנכסים הכוללים. מדד ליעילות השימוש בנכסי החברה."),
         ("P/B",         "Price-to-Book — מחיר המניה חלקי שווי הספרים. מתחת ל-1 = מניה זולה ביחס לנכסים."),
         ("P/S",         "Price-to-Sales — שווי שוק חלקי הכנסות. שימושי לחברות ללא רווח עדיין (סטארטאפ/צמיחה)."),
         ("Debt/Eq",     "Debt-to-Equity — יחס חוב להון עצמי. מעל 2 = ממונף גבוה, מתחת 0.5 = מאזן שמרני."),
         ("שווי שוק",   "Market Cap — מחיר מניה × מספר מניות. Mega Cap > $200B, Large Cap > $10B."),
-        ("Short Float", "אחוז המניות שמשקיעים מכרו בחסר (Short) — מעל 10% = לחץ שלילי / פוטנציאל Short Squeeze."),
-        ("מוסדי",       "Institutional Ownership — אחוז המניות בידי קרנות, בנקים, ביטוח. מוסדי גבוה = אמון מוסדי."),
+        ("Short %",     "אחוז המניות שמשקיעים מכרו בחסר (Short) — מעל 10% = לחץ שלילי / פוטנציאל Short Squeeze."),
+        ("מוסדי %",     "Institutional Ownership — אחוז המניות בידי קרנות, בנקים, ביטוח. מוסדי גבוה = אמון מוסדי."),
         ("דיבידנד %",   "Dividend Yield — הדיבידנד השנתי לחלק מחיר המניה. מדד תשואה שוטפת."),
+        ("Payout",      "Payout Ratio — אחוז הרווח שמחולק כדיבידנד. מעל 80% = לחץ על רווחים עתידיים."),
     ])
 
 

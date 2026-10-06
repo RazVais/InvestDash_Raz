@@ -1,4 +1,4 @@
-"""RazDashboard v2 — thin entry point.
+"""RazDashboard v4 — thin entry point.
 
 IMPORTANT: src.yf_patch must be imported FIRST — before any yfinance import.
 It patches yfinance's SQLite caches with in-memory Python dicts to avoid
@@ -8,41 +8,85 @@ Windows threading crashes.
 import src.yf_patch  # noqa: F401, I001 — MUST be first import
 
 import contextlib
+import hmac
 import os
 import threading
 import time
 import streamlit as st
 import streamlit.components.v1 as stc
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
+from src import ai
 from src.logger    import get_logger
-from src.config    import COLOR
+from src.config    import COLOR, HE
 from src.market    import get_market_state, market_badge, fmt_trading_day
-from src.portfolio import load_portfolio, all_tickers, lots_for_ticker
-from src.data.loader import load_all_data
-from src.data.prices import lookup_buy_price
+from src.portfolio import (
+    active_tickers, load_portfolio, portfolio_load_failed, reload_portfolio,
+)
+from src.data.loader import load_all_data, refresh_live
+from src.valuation import compute_holdings
 from src.email_report import send_alert_async, send_digest_sync, smtp_configured, test_smtp
 from src.portfolio import get_email_settings, set_auto_alert, set_email_recipients
 from src.tabs.red_flags import get_all_flag_statuses, get_flag_summary
-from src.tabs.overview         import render_overview
+from src.tabs.today_tab        import render_today
 from src.tabs.portfolio_tab    import render_portfolio
-from src.tabs.charts           import render_charts
-from src.tabs.analysts_tab     import render_analysts
+from src.tabs.ticker_tab       import render_ticker
+from src.tabs.practice_tab     import render_practice
+from src.tabs.analysts_tab     import (
+    _build_session_prompt, _run_session_analysis, warm_buy_timing_evals,
+)
+from src.tabs.daily_brief_tab  import _warm_all_briefs
 from src.tabs.red_flags        import render_red_flags
-from src.tabs.news_tab         import render_news
-from src.tabs.suggestions_tab  import render_suggestions
-from src.tabs.analysis_tab     import render_analysis
+from src.tabs.planning_tab     import record_daily_snapshot
 
 _log = get_logger(__name__)
 
+# ── Background Claude pre-warming ─────────────────────────────────────────────
+
+def _start_claude_warmup(tickers, data, flag_statuses, td_str, claude_api_key):
+    """Pre-warm buy-timing verdicts + daily briefs for held/starred tickers in a daemon thread.
+
+    Runs once per (trading day, ticker set) per server process — the AI caches are
+    keyed by (ticker, trading_day), so later reruns and price refreshes are cache hits.
+    """
+    if not claude_api_key or not tickers:
+        return
+    if not ai.claim_warmup((td_str, tuple(tickers))):
+        return
+
+    voo_history = (data.get("prices") or {}).get("VOO", {}).get("history")
+
+    def _do():
+        n0 = ai.call_count()
+        try:
+            # Session briefing first — it's the slowest single call and the analysts tab opens on it
+            _run_session_analysis(",".join(tickers), _build_session_prompt(list(tickers), data),
+                                  td_str, claude_api_key)
+            warm_buy_timing_evals(list(tickers), data, flag_statuses, td_str, claude_api_key)
+            _warm_all_briefs(list(tickers), data, flag_statuses, voo_history, td_str, claude_api_key)
+        except Exception:
+            _log.warning("Claude warmup failed", exc_info=True)
+        _log.info("Claude warmup done", extra={"calls": ai.call_count() - n0,
+                                               "tickers": len(tickers)})
+
+    t = threading.Thread(target=_do, daemon=True)
+    add_script_run_ctx(t)
+    t.start()
+
+
 # ── Navigation structure ──────────────────────────────────────────────────────
-_SIDEBAR_TABS = ["סקירה", "תיק שלי", "גרפים", "אנליסטים"]
+# Organised by job, not by data source: daily check-in / what I own / one ticker / practice.
+# Red flags has no nav entry — it opens from the 🔔 bell and the היום attention list.
+_SIDEBAR_TABS = [HE["tab_today"], HE["tab_holdings"], HE["tab_ticker"], HE["tab_practice"]]
 _SIDEBAR_ICONS = {
-    "סקירה":    "📊",
-    "תיק שלי":  "💼",
-    "גרפים":    "📈",
-    "אנליסטים": "👥",
+    HE["tab_today"]:    "☀️",
+    HE["tab_holdings"]: "💼",
+    HE["tab_ticker"]:   "📈",
+    HE["tab_practice"]: "🎯",
 }
-_SECONDARY_TABS = ["חדשות", "💡 המלצות", "🔬 ניתוח"]
+_FLAGS_TAB   = "דגלים אדומים"
+_DEFAULT_TAB = HE["tab_today"]
+_VALID_TABS  = set(_SIDEBAR_TABS) | {_FLAGS_TAB}
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -209,44 +253,18 @@ def _kpi_card_html(label, value, sub, sub_color):
 
 # ── KPI header helpers ────────────────────────────────────────────────────────
 
-def _compute_portfolio_totals(portfolio, prices):
-    """Return (total_cost, total_value, value_by_ticker)."""
-    total_cost = total_value = 0.0
-    value_by_ticker = {}
-    for ticker in all_tickers(portfolio):
-        p = prices.get(ticker)
-        if not p:
-            continue
-        ticker_value = 0.0
-        for _layer, lot in lots_for_ticker(portfolio, ticker):
-            shares = lot.get("shares", 0.0)
-            if shares <= 0:
-                continue
-            bp = lookup_buy_price(ticker, lot.get("buy_date", ""), prices)
-            if bp:
-                total_cost += shares * bp
-            total_value  += shares * p["price"]
-            ticker_value += shares * p["price"]
-        value_by_ticker[ticker] = ticker_value
-    return total_cost, total_value, value_by_ticker
-
-
-def _compute_alpha(prices, value_by_ticker, total_value):
-    """Return (portfolio_1m_pct, voo_1m_pct)."""
+def _compute_alpha(prices, holdings):
+    """Return (portfolio_1m_pct, voo_1m_pct), weighting tickers by USD market value."""
     portfolio_1m = 0.0
-    if total_value > 0:
-        for ticker, val in value_by_ticker.items():
-            p = prices.get(ticker)
-            if not p:
-                continue
-            hist = p.get("history")
+    total_mv = holdings["market_value_usd"]
+    if total_mv > 0:
+        for ticker, row in holdings["tickers"].items():
+            hist = (prices.get(ticker) or {}).get("history")
             if hist is None or len(hist) < 21:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 t_ret = (float(hist.iloc[-1]) / float(hist.iloc[-21]) - 1) * 100
-                portfolio_1m += t_ret * (val / total_value)
-            except Exception:
-                pass
+                portfolio_1m += t_ret * (row["market_value_usd"] / total_mv)
     voo_1m = 0.0
     voo_p  = prices.get("VOO")
     if voo_p:
@@ -269,7 +287,7 @@ def _render_bell(n_triggered, n_watch):
         bell_label, bell_css, bell_tip = "🔔", "bell-ok", "כל הדגלים תקינים"
     st.markdown(f'<div class="{bell_css}">', unsafe_allow_html=True)
     if st.button(bell_label, key="_bell_btn", help=bell_tip, use_container_width=True):
-        st.session_state.active_tab = "דגלים אדומים"
+        st.session_state.active_tab = _FLAGS_TAB
         st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -278,13 +296,15 @@ def _render_bell(n_triggered, n_watch):
 
 def _render_kpi_header(portfolio, data, n_triggered, n_watch):
     """Four KPI cards: Portfolio Value | P&L | Alpha vs VOO | Alert bell."""
-    prices = data.get("prices", {})
+    prices   = data.get("prices", {})
+    holdings = compute_holdings(portfolio, prices, data.get("ils_usd"))
 
-    total_cost, total_value, value_by_ticker = _compute_portfolio_totals(portfolio, prices)
-    pnl     = total_value - total_cost
+    total_cost  = holdings["cost_usd"]
+    total_value = holdings["market_value_usd"]
+    pnl     = holdings["value_usd"] - total_cost
     pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0.0
 
-    portfolio_1m, voo_1m = _compute_alpha(prices, value_by_ticker, total_value)
+    portfolio_1m, voo_1m = _compute_alpha(prices, holdings)
     alpha       = portfolio_1m - voo_1m
     alpha_color = COLOR["positive"] if alpha >= 0 else COLOR["negative"]
     alpha_str   = f"{alpha:+.2f}%" if total_value > 0 else "—"
@@ -311,33 +331,6 @@ def _render_kpi_header(portfolio, data, n_triggered, n_watch):
 
     with col_bell:
         _render_bell(n_triggered, n_watch)
-
-
-# ── Secondary tab bar ─────────────────────────────────────────────────────────
-
-def _render_secondary_tab_bar():
-    """Compact tab row for secondary content: News, Recommendations, Daily, Analysis."""
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "תיק שלי"
-
-    st.markdown(
-        '<div style="border-top:1px solid #1f2937;padding-top:4px;margin-top:8px"></div>',
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(len(_SECONDARY_TABS))
-    for col, label in zip(reversed(cols), _SECONDARY_TABS):
-        is_active = st.session_state.active_tab == label
-        css_class = "sec-tab-active" if is_active else "sec-tab-inactive"
-        with col:
-            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-            if st.button(label, key=f"_sec_{label}", use_container_width=True):
-                st.session_state.active_tab = label
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown(
-        '<div style="border-bottom:1px solid #1f2937;margin-bottom:12px"></div>',
-        unsafe_allow_html=True,
-    )
 
 
 # ── Auto-alert ────────────────────────────────────────────────────────────────
@@ -530,11 +523,12 @@ def _render_macro_watchlist(macro):
 def _render_sidebar_tools(market_state):
     """Render the bottom 3-icon tool row (refresh, email toggle, exit)."""
     is_trading_day = market_state.get("is_trading_day", False)
+    cloud = _app_mode() == "cloud"
     col_r, col_e, col_x = st.columns(3)
     with col_r:
         if is_trading_day:
             if st.button("🔄", key="_sb_refresh", use_container_width=True, help="רענן נתונים"):
-                st.cache_data.clear()
+                refresh_live()
                 st.rerun()
         else:
             st.button("🔄", key="_sb_refresh", use_container_width=True,
@@ -544,7 +538,9 @@ def _render_sidebar_tools(market_state):
             st.session_state["_email_open"] = not st.session_state.get("_email_open", False)
             st.rerun()
     with col_x:
-        if st.button("🔴", key="_sb_exit", use_container_width=True, help="סגור את האפליקציה"):
+        # Exit kills the server process — only meaningful (and safe) on a local run
+        if not cloud and st.button("🔴", key="_sb_exit", use_container_width=True,
+                                   help="סגור את האפליקציה"):
             stc.html(
                 """<script>
                 try { window.top.close(); } catch(e) {}
@@ -566,9 +562,6 @@ def _render_sidebar_tools(market_state):
 
 def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=None, td_str=""):
     """Sidebar: logo/badge, primary nav, macro watchlist with sparklines, tools."""
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "תיק שלי"
-
     with st.sidebar:
         st.markdown(
             '<div dir="rtl" style="font-size:16px;font-weight:800;color:#ffffff;'
@@ -591,14 +584,53 @@ def _render_sidebar(portfolio, data, market_state, smtp_cfg=None, flag_statuses=
             _render_email_section(portfolio, data, flag_statuses or [], td_str, smtp_cfg or {})
 
 
+# ── Access control ────────────────────────────────────────────────────────────
+
+def _secret(key, default=""):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+def _app_mode():
+    """'local' (default) or 'cloud' — cloud hides process-level controls."""
+    return str(_secret("MODE", "local") or "local").strip().lower()
+
+
+def _password_gate():
+    """Return True when the viewer may use the app.
+
+    No APP_PASSWORD → open (local use). MODE=cloud without APP_PASSWORD →
+    refuse to start, since anyone with the URL could edit the portfolio,
+    send email and spend API credits.
+    """
+    password = str(_secret("APP_PASSWORD", "") or "")
+    if not password:
+        if _app_mode() == "cloud":
+            st.error("MODE = \"cloud\" requires APP_PASSWORD in secrets.")
+            return False
+        return True
+    if st.session_state.get("_authed"):
+        return True
+
+    entered = st.text_input(HE["pw_prompt"], type="password", key="_pw_input")
+    if entered:
+        if hmac.compare_digest(entered.encode("utf-8"), password.encode("utf-8")):
+            st.session_state["_authed"] = True
+            st.rerun()
+        time.sleep(1.0)  # slow down guessing
+        st.error(HE["pw_wrong"])
+    return False
+
+
 # ── Main helpers ──────────────────────────────────────────────────────────────
 
 _TAB_SLOW = {
-    "סקירה":        {"targets", "fundamentals", "earnings"},
-    "חדשות":        {"news"},
-    "אנליסטים":     {"targets", "upgrades"},
-    "דגלים אדומים": {"upgrades", "commodities"},
-    "גרפים":        {"targets"},
+    HE["tab_today"]:    {"earnings", "upgrades", "commodities"},
+    HE["tab_holdings"]: {"targets", "fundamentals", "earnings", "upgrades"},
+    HE["tab_ticker"]:   {"targets", "news", "fundamentals"},
+    _FLAGS_TAB:         {"upgrades", "commodities"},
 }
 
 
@@ -628,33 +660,46 @@ def _render_deferred_banner(active, data):
             st.caption("📡 חלק מהנתונים עדיין בטעינת רקע — לחץ רענן לעדכון מיידי")
         with col_btn:
             if st.button("🔄", key="_bg_refresh", help="רענן נתוני רקע"):
-                st.cache_data.clear()
-                st.rerun()
+                st.rerun()  # background warming fills the cache; a rerun picks it up
 
 
 def _render_tab_content(active, portfolio, data, market_state, td_str, api_key, claude_api_key):
     """Route to the correct tab renderer based on active tab name."""
-    if active == "סקירה":
-        render_overview(portfolio, data, market_state, td_str)
-    elif active == "תיק שלי":
-        render_portfolio(portfolio, data)
-    elif active == "גרפים":
-        render_charts(portfolio, data, td_str, claude_api_key)
-    elif active == "אנליסטים":
-        render_analysts(portfolio, data, td_str, claude_api_key)
-    elif active == "דגלים אדומים":
+    if active == HE["tab_today"]:
+        render_today(portfolio, data, td_str, claude_api_key)
+    elif active == HE["tab_holdings"]:
+        render_portfolio(portfolio, data, td_str, claude_api_key)
+    elif active == HE["tab_ticker"]:
+        render_ticker(portfolio, data, td_str, api_key, claude_api_key)
+    elif active == HE["tab_practice"]:
+        render_practice(portfolio, data, td_str, claude_api_key)
+    elif active == _FLAGS_TAB:
         render_red_flags(portfolio, data, td_str)
-    elif active == "חדשות":
-        render_news(portfolio, data, td_str, claude_api_key)
-    elif active == "💡 המלצות":
-        render_suggestions(portfolio, data, td_str, api_key)
-    elif active == "🔬 ניתוח":
-        render_analysis(portfolio, data, td_str, api_key, claude_api_key)
+
+
+def _render_persistence_banner():
+    """Warn when the portfolio failed to load (saves blocked) or a Gist save failed."""
+    if portfolio_load_failed():
+        col_msg, col_btn = st.columns([6, 1])
+        with col_msg:
+            st.error(HE["load_failed"])
+        with col_btn:
+            if st.button(HE["load_retry"], key="_reload_portfolio"):
+                reload_portfolio()
+                st.rerun()
+    save_err = st.session_state.get("_portfolio_save_error")
+    if save_err == "gist":
+        st.warning(HE["save_failed"])
+    elif save_err == "blocked":
+        st.warning(HE["save_blocked"])
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    if not _password_gate():
+        st.stop()
+
     portfolio    = load_portfolio()
     market_state = get_market_state()
     td_str       = market_state["last_trading_day"].isoformat()
@@ -663,15 +708,21 @@ def main():
 
     api_key, claude_api_key, smtp_cfg = _load_secrets()
 
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "תיק שלי"
+    if st.session_state.get("active_tab") not in _VALID_TABS:
+        st.session_state.active_tab = _DEFAULT_TAB  # first load, or a pre-v4.2 tab name
     active = st.session_state.active_tab
 
     data = load_all_data(portfolio, market_state, api_key, active_tab=active)
 
     flag_statuses        = get_all_flag_statuses(portfolio, data)
+    data["_flags"]       = flag_statuses  # tabs reuse this instead of re-evaluating
     n_triggered, n_watch = get_flag_summary(portfolio, data)
     _auto_send_alert(portfolio, flag_statuses, td_str, smtp_cfg)
+    if not portfolio_load_failed():
+        record_daily_snapshot(portfolio, data, td_str, market_state)
+
+    _start_claude_warmup(tuple(active_tickers(portfolio)), data, flag_statuses, td_str,
+                         claude_api_key)
 
     _render_sidebar(portfolio, data, market_state, smtp_cfg, flag_statuses, td_str)
 
@@ -682,8 +733,8 @@ def main():
         unsafe_allow_html=True,
     )
 
+    _render_persistence_banner()
     _render_kpi_header(portfolio, data, n_triggered, n_watch)
-    _render_secondary_tab_bar()
     _render_deferred_banner(active, data)
     _render_tab_content(active, portfolio, data, market_state, td_str, api_key, claude_api_key)
 

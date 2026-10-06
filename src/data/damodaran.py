@@ -4,6 +4,7 @@ Public datasets: https://pages.stern.nyu.edu/~adamodar/pc/datasets/
 No authentication required.  Cached for 7 days (Damodaran updates annually in January).
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import io
 import math
 from typing import Optional
@@ -73,83 +74,90 @@ def _safe_float(val) -> Optional[float]:
         return None
 
 
-@st.cache_data(ttl=604800)  # 7 days — Damodaran updates annually in January
 def get_damodaran_sector_data() -> dict:
     """
-    Fetch and merge Damodaran sector benchmarks from NYU public datasets.
+    Damodaran sector benchmarks from NYU public datasets.
 
     Returns {industry_name_lower: {name, pe, ev_ebitda, beta, peg, growth_5y}} or {} on failure.
-    Graceful degradation: missing files or parse failures return {} without crashing.
+    Failures are not cached (the next call retries); successes are cached 7 days.
     """
     try:
-        pe_df   = _fetch_excel("pedata.xls")
-        ev_df   = _fetch_excel("vebitda.xls")
-        beta_df = _fetch_excel("betas.xls")
-
-        if pe_df is None and ev_df is None:
-            return {}
-
-        result: dict = {}
-
-        # ── P/E + PEG + 5-year growth ─────────────────────────────────────────
-        if pe_df is not None:
-            ind_col = _find_industry_col(pe_df)
-            if ind_col:
-                pe_df = pe_df.dropna(subset=[ind_col])
-                for _, row in pe_df.iterrows():
-                    name = str(row[ind_col]).strip()
-                    if not name or name.lower() in ("industry name", "nan"):
-                        continue
-                    result[name.lower()] = {
-                        "name":      name,
-                        "pe":        _safe_float(row.get("Current PE")),
-                        "peg":       _safe_float(row.get("PEG Ratio")),
-                        "growth_5y": _safe_float(row.get("Expected growth - next 5 years")),
-                        "ev_ebitda": None,
-                        "beta":      None,
-                    }
-
-        # ── EV/EBITDA ─────────────────────────────────────────────────────────
-        if ev_df is not None:
-            ind_col = _find_industry_col(ev_df)
-            if ind_col:
-                ev_df = ev_df.dropna(subset=[ind_col])
-                for _, row in ev_df.iterrows():
-                    name = str(row[ind_col]).strip()
-                    if not name:
-                        continue
-                    key    = name.lower()
-                    ev_val = _safe_float(row.get("EV/EBITDA"))
-                    if key in result:
-                        result[key]["ev_ebitda"] = ev_val
-                    else:
-                        result[key] = {
-                            "name": name, "pe": None, "peg": None,
-                            "growth_5y": None, "ev_ebitda": ev_val, "beta": None,
-                        }
-
-        # ── Beta ──────────────────────────────────────────────────────────────
-        if beta_df is not None:
-            ind_col = _find_industry_col(beta_df)
-            if ind_col:
-                beta_df = beta_df.dropna(subset=[ind_col])
-                for _, row in beta_df.iterrows():
-                    name = str(row[ind_col]).strip()
-                    if not name:
-                        continue
-                    key   = name.lower()
-                    b_val = _safe_float(row.get("Beta"))
-                    if key in result:
-                        result[key]["beta"] = b_val
-                    else:
-                        result[key] = {
-                            "name": name, "pe": None, "peg": None,
-                            "growth_5y": None, "ev_ebitda": None, "beta": b_val,
-                        }
-
-        return result
+        return _damodaran_cached()
     except Exception:
         return {}
+
+
+@st.cache_data(ttl=604800, show_spinner=False)  # 7 days — Damodaran updates annually in January
+def _damodaran_cached() -> dict:
+    """Raises when the datasets can't be fetched/parsed, so a failure isn't cached for a week."""
+    # The three files are independent — download them in parallel
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        pe_df, ev_df, beta_df = ex.map(_fetch_excel, ("pedata.xls", "vebitda.xls", "betas.xls"))
+
+    if pe_df is None and ev_df is None:
+        raise RuntimeError("Damodaran datasets unavailable")
+
+    result: dict = {}
+
+    # ── P/E + PEG + 5-year growth ─────────────────────────────────────────
+    if pe_df is not None:
+        ind_col = _find_industry_col(pe_df)
+        if ind_col:
+            pe_df = pe_df.dropna(subset=[ind_col])
+            for _, row in pe_df.iterrows():
+                name = str(row[ind_col]).strip()
+                if not name or name.lower() in ("industry name", "nan"):
+                    continue
+                result[name.lower()] = {
+                    "name":      name,
+                    "pe":        _safe_float(row.get("Current PE")),
+                    "peg":       _safe_float(row.get("PEG Ratio")),
+                    "growth_5y": _safe_float(row.get("Expected growth - next 5 years")),
+                    "ev_ebitda": None,
+                    "beta":      None,
+                }
+
+    # ── EV/EBITDA ─────────────────────────────────────────────────────────
+    if ev_df is not None:
+        ind_col = _find_industry_col(ev_df)
+        if ind_col:
+            ev_df = ev_df.dropna(subset=[ind_col])
+            for _, row in ev_df.iterrows():
+                name = str(row[ind_col]).strip()
+                if not name:
+                    continue
+                key    = name.lower()
+                ev_val = _safe_float(row.get("EV/EBITDA"))
+                if key in result:
+                    result[key]["ev_ebitda"] = ev_val
+                else:
+                    result[key] = {
+                        "name": name, "pe": None, "peg": None,
+                        "growth_5y": None, "ev_ebitda": ev_val, "beta": None,
+                    }
+
+    # ── Beta ──────────────────────────────────────────────────────────────
+    if beta_df is not None:
+        ind_col = _find_industry_col(beta_df)
+        if ind_col:
+            beta_df = beta_df.dropna(subset=[ind_col])
+            for _, row in beta_df.iterrows():
+                name = str(row[ind_col]).strip()
+                if not name:
+                    continue
+                key   = name.lower()
+                b_val = _safe_float(row.get("Beta"))
+                if key in result:
+                    result[key]["beta"] = b_val
+                else:
+                    result[key] = {
+                        "name": name, "pe": None, "peg": None,
+                        "growth_5y": None, "ev_ebitda": None, "beta": b_val,
+                    }
+
+    if not result:
+        raise RuntimeError("Damodaran datasets parsed to nothing")
+    return result
 
 
 def get_sector_benchmarks(ticker: str) -> dict:

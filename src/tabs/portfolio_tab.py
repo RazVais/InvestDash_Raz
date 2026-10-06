@@ -4,14 +4,23 @@ from datetime import date
 
 import streamlit as st
 
-from src.config import COLOR, TICKER_NAMES, guess_layer, is_tase_numeric
+from src.config import COLOR, HE, TICKER_NAMES, guess_layer, is_tase_numeric
 from src.data.prices import get_current_price_or_daily_avg, lookup_buy_price
+from src.journal import prepend_entry
+from src.logger import get_logger
 from src.portfolio import (
+    add_closed_trade,
     add_lot,
     all_tickers,
+    close_lot,
+    close_ticker,
+    get_alerts,
+    get_starred,
     lots_for_ticker,
     remove_lot,
     remove_ticker,
+    set_starred_list,
+    set_ticker_alerts,
     update_lot,
 )
 from src.tabs.overview import (
@@ -21,19 +30,36 @@ from src.tabs.overview import (
     _render_portfolio_heatmap,
     _render_stress_test,
 )
-from src.tabs.trading_journal_tab import render_trading_journal
+from src.tabs.trading_journal_tab import render_closed_trades_summary
 from src.ui_helpers import color_legend, section_title, term_glossary
 
+_log = get_logger(__name__)
 
-def render_portfolio(portfolio, data):
+
+
+def render_portfolio(portfolio, data, td_str="", claude_api_key=""):
+    """תיק — everything about what you own: P&L, securities, analysts, charts, stops."""
+    from src.tabs.analysts_tab import render_analyst_views
+    from src.tabs.overview import render_securities
+    from src.tabs.planning_tab import render_history, render_rebalance
+
     prices = data["prices"]
 
-    tab_portfolio, tab_visuals, tab_journal = st.tabs([
-        "📊 תיק שלי", "🗺 תרשימי תיק", "📈 יומן עסקאות"
+    (tab_portfolio, tab_history, tab_rebalance, tab_securities, tab_analysts,
+     tab_visuals, tab_stops) = st.tabs([
+        HE["sub_pnl"], HE["sub_history"], HE["sub_rebalance"], HE["sub_securities"],
+        HE["sub_analysts"], HE["sub_visuals"], HE["sub_stops"],
     ])
+
+    with tab_history:
+        render_history(portfolio, data)
+
+    with tab_rebalance:
+        render_rebalance(portfolio, data)
 
     with tab_portfolio:
         _render_pnl_table(portfolio, prices)
+        render_closed_trades_summary(prices)
         st.divider()
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -42,22 +68,29 @@ def render_portfolio(portfolio, data):
             _form_edit_lot(portfolio, prices)
         with c3:
             _form_remove(portfolio, prices)
+        _form_add_closed_trade(portfolio, prices)
 
     with tab_visuals:
         col1, col2 = st.columns([1, 1])
         with col1:
-            _render_pnl_summary(portfolio, prices)
+            _render_pnl_summary(portfolio, prices, data.get("ils_usd"))
         with col2:
-            _render_allocation_donut(portfolio, prices)
+            _render_allocation_donut(portfolio, prices, data.get("ils_usd"))
         st.divider()
         _render_portfolio_heatmap(portfolio, prices)
         st.divider()
         _render_correlation_matrix(prices)
         st.divider()
-        _render_stress_test(portfolio, prices)
+        _render_stress_test(portfolio, prices, data.get("ils_usd"))
 
-    with tab_journal:
-        render_trading_journal(portfolio, data)
+    with tab_securities:
+        render_securities(portfolio, data, td_str)
+
+    with tab_analysts:
+        render_analyst_views(portfolio, data, td_str, claude_api_key)
+
+    with tab_stops:
+        _render_stops_tab(portfolio, prices)
 
 
 def _render_pnl_table(portfolio, prices):
@@ -68,7 +101,6 @@ def _render_pnl_table(portfolio, prices):
         f"border-bottom:2px solid #333;font-size:11px;text-align:right"
     )
     _TD = "padding:5px 8px;font-size:11px"
-    # Fixed column widths so every per-ticker table fragment is aligned
     _COL_W = ["14%", "22%", "9%", "11%", "12%", "12%", "20%"]
     _COLGROUP = "".join(f'<col style="width:{w}">' for w in _COL_W)
 
@@ -80,8 +112,41 @@ def _render_pnl_table(portfolio, prices):
             f'<tbody>{tbody_html}</tbody></table></div>'
         )
 
+    # ── Sort controls ─────────────────────────────────────────────
+    _SORT_OPTS = ["Ticker", "שווי", "רווח $", "רווח %", "עלות"]
+    _, _sc1, _sc2 = st.columns([4, 2, 1])
+    with _sc1:
+        _sort_col = st.selectbox(
+            "מיין לפי", _SORT_OPTS, key="pnl_sort_col", label_visibility="collapsed",
+        )
+    with _sc2:
+        _sort_asc = st.checkbox("↑", value=True, key="pnl_sort_asc", help="סדר עולה")
+
+    def _ticker_sort_val(t):
+        if _sort_col == "Ticker":
+            return t
+        p = prices.get(t)
+        cur = p["price"] if p else None
+        tc = tv = tp = 0.0
+        for _l, lot in lots_for_ticker(portfolio, t):
+            s = lot.get("shares", 0)
+            if s <= 0:
+                continue
+            bp = lot.get("buy_price") or lookup_buy_price(t, lot["buy_date"], prices)
+            cost  = s * bp if bp else 0.0
+            value = s * cur if cur else 0.0
+            tc += cost
+            tv += value
+            tp += value - cost
+        pct = (tp / tc * 100) if tc > 0 else 0.0
+        return {"שווי": tv, "רווח $": tp, "רווח %": pct, "עלות": tc}.get(_sort_col, 0.0)
+
+    _sorted_tickers = sorted(
+        all_tickers(portfolio), key=_ticker_sort_val, reverse=not _sort_asc,
+    )
+
     grand_cost = grand_value = grand_pnl = 0.0
-    tase_cost = tase_value = tase_pnl = 0.0  # ILS totals tracked separately
+    tase_cost = tase_value = tase_pnl = 0.0
 
     # ── Table header (column labels) ──────────────────────────────
     _, col_hdr = st.columns([1, 24])
@@ -103,7 +168,7 @@ def _render_pnl_table(portfolio, prices):
         st.markdown(hdr_html, unsafe_allow_html=True)
 
     # ── Per-ticker rows ───────────────────────────────────────────
-    for t in sorted(all_tickers(portfolio)):
+    for t in _sorted_tickers:
         p         = prices.get(t)
         cur_price = p["price"] if p else None
         is_tase   = is_tase_numeric(t) or (p.get("currency") == "ILS" if p else False)
@@ -274,6 +339,7 @@ def _render_pnl_table(portfolio, prices):
                 f'table-layout:fixed"><colgroup>{wl_colgroup}</colgroup>'
                 f'<tbody>{rows_html}</tbody></table></div>'
             )
+        starred = set(get_starred(portfolio))
         wl_rows = ""
         for t in watched:
             p = prices.get(t) or {}
@@ -287,7 +353,8 @@ def _render_pnl_table(portfolio, prices):
                 chg_str = "—"
             wl_rows += (
                 f'<tr style="background:#161620">'
-                f'<td style="{_TD};color:#aaaaaa;border-left:3px solid #444">{t}</td>'
+                f'<td style="{_TD};color:#aaaaaa;border-left:3px solid #444">'
+                f'{"⭐ " if t in starred else ""}{t}</td>'
                 f'<td style="{_TD};font-size:10px;color:{COLOR["text_dim"]}">'
                 f'{TICKER_NAMES.get(t, "")}</td>'
                 f'<td style="{_TD}">{cur_str}</td>'
@@ -297,6 +364,15 @@ def _render_pnl_table(portfolio, prices):
         _, col_wl = st.columns([1, 24])
         with col_wl:
             st.markdown(_wl_table(wl_rows), unsafe_allow_html=True)
+            # Star tier: starred watch names get analyst data, news and daily AI
+            sel = st.multiselect(
+                HE["starred"], options=watched,
+                default=[t for t in watched if t in starred],
+                help=HE["star_help"], key="_starred_sel",
+            )
+            if set(sel) != (starred & set(watched)):
+                set_starred_list(portfolio, sel)
+                st.rerun()
 
     color_legend([
         ("#4CAF50",  "רווח"),
@@ -364,7 +440,6 @@ def _form_add_lot(portfolio, prices):
                 st.error("הכנס סימול תקין.")
             elif watch_only:
                 add_lot(portfolio, layer, ticker, 0, date.today(), buy_price=None)
-                st.cache_data.clear()
                 st.success(f"נוסף למעקב: {ticker} — שכבה: {layer}")
                 st.rerun()
             elif shares <= 0:
@@ -375,7 +450,6 @@ def _form_add_lot(portfolio, prices):
                 else:
                     final_price = get_current_price_or_daily_avg(ticker, bd, prices)
                 add_lot(portfolio, layer, ticker, shares, bd, buy_price=final_price)
-                st.cache_data.clear()
                 price_str = f" — מחיר: ${final_price:.2f}" if final_price else ""
                 st.success(f"נוסף: {ticker} × {shares:.3f} @ {bd}{price_str} — שכבה: {layer}")
                 st.rerun()
@@ -429,7 +503,6 @@ def _form_edit_lot(portfolio, prices):
                 final_price = detected if detected is not None else stored_price
             update_lot(portfolio, sel_layer, t_sel, sel_lot["buy_date"], new_shares, new_date,
                        buy_price=final_price)
-            st.cache_data.clear()
             price_str = f" — מחיר: ${final_price:.2f}" if final_price else ""
             st.success(f"לוט עודכן.{price_str}")
             st.rerun()
@@ -489,40 +562,490 @@ def _reinvest_preview(t, lots_to_sell, prices):
 
 
 def _form_remove(portfolio, prices):
-    with st.expander("🗑 הסר"):
+    with st.expander("🗑 מכירה / הסרה"):
         tickers_all = sorted(all_tickers(portfolio))
         if not tickers_all:
             st.caption("אין ניירות ערך בתיק.")
             return
 
-        mode = st.radio("מצב", ["הסר לוט ספציפי", "הסר טיקר שלם"], key="rm_mode", horizontal=True)
+        mode = st.radio("מצב", ["מכור לוט ספציפי", "מכור/הסר טיקר שלם"], key="rm_mode", horizontal=True)
 
-        if mode == "הסר לוט ספציפי":
+        if mode == "מכור לוט ספציפי":
             t_sel = st.selectbox("סימול", tickers_all, key="rm_ticker")
+            is_tase = is_tase_numeric(t_sel)
+            sym = "₪" if is_tase else "$"
             lots  = [(layer, lot) for layer, lot in lots_for_ticker(portfolio, t_sel)]
             if lots:
                 lot_labels = [
                     f"{lot['buy_date']} × {lot['shares']:.3f}"
-                    + (f" @ {'₪' if is_tase_numeric(t_sel) else '$'}{lot['buy_price']:.2f}" if lot.get("buy_price") else "")
+                    + (f" @ {sym}{lot['buy_price']:.2f}" if lot.get("buy_price") else "")
                     for _l, lot in lots
                 ]
                 sel_idx    = st.selectbox("לוט", range(len(lots)),
                                            format_func=lambda i: lot_labels[i], key="rm_lot_sel")
                 sel_layer, sel_lot = lots[sel_idx]
                 _reinvest_preview(t_sel, [sel_lot], prices)
-                if st.button("הסר לוט", key="rm_lot_btn"):
-                    remove_lot(portfolio, sel_layer, t_sel, sel_lot["buy_date"])
-                    st.cache_data.clear()
-                    st.success(f"לוט הוסר: {t_sel} {sel_lot['buy_date']}")
+
+                has_shares = float(sel_lot.get("shares") or 0) > 0
+                sell_price_lot = 0.0
+                sell_date_lot  = date.today()
+                if has_shares:
+                    st.markdown(
+                        '<div dir="rtl" style="font-size:11px;color:#94a3b8;margin:6px 0 2px">פרטי מכירה:</div>',
+                        unsafe_allow_html=True,
+                    )
+                    sc1, sc2 = st.columns(2)
+                    default_price = (prices.get(t_sel) or {}).get("price") or 0.0
+                    sell_date_lot = sc1.date_input(
+                        "תאריך מכירה", value=date.today(), key="sell_date_lot"
+                    )
+                    sell_price_lot = sc2.number_input(
+                        f"מחיר מכירה ({sym})",
+                        min_value=0.0,
+                        value=round(float(default_price), 2),
+                        step=0.01, format="%.2f",
+                        key="sell_price_lot",
+                    )
+
+                if st.button("מכור / הסר לוט", key="rm_lot_btn"):
+                    if has_shares and sell_price_lot > 0:
+                        close_lot(portfolio, sel_layer, t_sel,
+                                  sel_lot["buy_date"], sell_date_lot, sell_price_lot)
+                        pnl_str = ""
+                        if sel_lot.get("buy_price"):
+                            pnl = (sell_price_lot - sel_lot["buy_price"]) * sel_lot["shares"]
+                            pnl_str = f" | רווח/הפסד: {sym}{pnl:+,.2f}"
+                        st.success(f"נמכר: {t_sel} {sel_lot['buy_date']} @ {sym}{sell_price_lot:.2f}{pnl_str}")
+                    else:
+                        remove_lot(portfolio, sel_layer, t_sel, sel_lot["buy_date"])
+                        st.success(f"לוט הוסר: {t_sel} {sel_lot['buy_date']}")
                     st.rerun()
         else:
-            t_sel    = st.selectbox("סימול להסרה מלאה", tickers_all, key="rm_full_ticker")
+            t_sel    = st.selectbox("סימול", tickers_all, key="rm_full_ticker")
+            is_tase  = is_tase_numeric(t_sel)
+            sym      = "₪" if is_tase else "$"
             all_lots = [lot for _l, lot in lots_for_ticker(portfolio, t_sel) if lot.get("shares", 0) > 0]
+            sell_price_full = 0.0
+            sell_date_full  = date.today()
             if all_lots:
                 _reinvest_preview(t_sel, all_lots, prices)
+
+            if all_lots:
+                st.markdown(
+                    '<div dir="rtl" style="font-size:11px;color:#94a3b8;margin:6px 0 2px">פרטי מכירה:</div>',
+                    unsafe_allow_html=True,
+                )
+                fc1, fc2 = st.columns(2)
+                default_price = (prices.get(t_sel) or {}).get("price") or 0.0
+                sell_date_full = fc1.date_input(
+                    "תאריך מכירה", value=date.today(), key="sell_date_full"
+                )
+                sell_price_full = fc2.number_input(
+                    f"מחיר מכירה ({sym})",
+                    min_value=0.0,
+                    value=round(float(default_price), 2),
+                    step=0.01, format="%.2f",
+                    key="sell_price_full",
+                )
+
             st.warning(f"זה יסיר את כל הלוטים של {t_sel}!")
-            if st.button(f"הסר את {t_sel}", key="rm_full_btn"):
-                remove_ticker(portfolio, t_sel)
-                st.cache_data.clear()
-                st.success(f"{t_sel} הוסר מהתיק.")
+            if st.button(f"מכור / הסר את {t_sel}", key="rm_full_btn"):
+                if all_lots and sell_price_full > 0:
+                    close_ticker(portfolio, t_sel, sell_date_full, sell_price_full)
+                    st.success(f"{t_sel} נמכר @ {sym}{sell_price_full:.2f} והוסר מהתיק.")
+                else:
+                    remove_ticker(portfolio, t_sel)
+                    st.success(f"{t_sel} הוסר מהתיק.")
+                st.rerun()
+
+
+# ── Trade history helpers ─────────────────────────────────────────────────────
+
+def _form_add_closed_trade(portfolio, prices):
+    """Expander to manually record a past closed trade (buy + sell pair)."""
+    with st.expander("📝 הוסף עסקה סגורה ידנית (לגיבוי היסטוריה)"):
+        existing = sorted(all_tickers(portfolio))
+        ticker_opts = existing + ["➕ טיקר אחר..."]
+        t_sel = st.selectbox("סימול", ticker_opts, key="ct_ticker_sel",
+                             format_func=lambda t: t if t != "➕ טיקר אחר..." else "➕ הקלד טיקר אחר")
+        if t_sel == "➕ טיקר אחר...":
+            ticker = st.text_input("סימול", key="ct_ticker_new", placeholder="e.g. NVDA").upper().strip()
+        else:
+            ticker = t_sel
+
+        layer = guess_layer(ticker) if ticker else list(portfolio["layers"].keys())[0]
+        if layer not in portfolio["layers"]:
+            layer = list(portfolio["layers"].keys())[0]
+        is_tase = is_tase_numeric(ticker) if ticker else False
+        sym = "₪" if is_tase else "$"
+
+        c1, c2 = st.columns(2)
+        shares     = c1.number_input("כמות מניות", min_value=0.001, step=0.001, format="%.3f", key="ct_shares")
+        buy_date   = c1.date_input("תאריך קנייה", key="ct_buy_date")
+        buy_price  = c1.number_input(f"מחיר קנייה ({sym})", min_value=0.0, step=0.01, format="%.2f", key="ct_buy_price")
+        sell_date  = c2.date_input("תאריך מכירה", value=date.today(), key="ct_sell_date")
+        sell_price = c2.number_input(f"מחיר מכירה ({sym})", min_value=0.0, step=0.01, format="%.2f", key="ct_sell_price")
+
+        if ticker and buy_price > 0 and sell_price > 0 and shares > 0:
+            pnl = (sell_price - buy_price) * shares
+            pnl_c = "#4CAF50" if pnl >= 0 else "#F44336"
+            st.markdown(
+                f'<div dir="rtl" style="font-size:12px;color:{pnl_c};font-weight:700;margin:4px 0">'
+                f'רווח/הפסד: {sym}{pnl:+,.2f} ({(pnl / (buy_price * shares) * 100):+.1f}%)'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        if st.button("שמור עסקה", key="ct_save"):
+            if not ticker:
+                st.error("הכנס סימול.")
+            elif buy_price <= 0 or sell_price <= 0 or shares <= 0:
+                st.error("יש להזין כמות, מחיר קנייה ומחיר מכירה.")
+            else:
+                add_closed_trade(portfolio, ticker, shares, buy_price, buy_date,
+                                 sell_price, sell_date, layer)
+                pnl = (sell_price - buy_price) * shares
+                st.success(
+                    f"נשמר: {ticker} × {shares:.3f} | קנייה {sym}{buy_price:.2f} @ {buy_date} "
+                    f"→ מכירה {sym}{sell_price:.2f} @ {sell_date} | רווח/הפסד: {sym}{pnl:+,.2f}"
+                )
+                st.rerun()
+
+
+# ── Stops & Alerts tab ────────────────────────────────────────────────────────
+
+def _log_stops_to_journal(ticker, current_price, stop_loss, trailing_stop_pct, price_alerts):
+    """Append a risk-management note to the trading journal (no Claude call needed)."""
+
+    dist_str = ""
+    if stop_loss and current_price:
+        dist = (current_price - stop_loss) / current_price * 100
+        dist_str = f" ({dist:.1f}% below current ${current_price:.2f})"
+
+    parts = []
+    if stop_loss:
+        parts.append(f"Stop loss ${stop_loss:.2f}{dist_str}")
+    if trailing_stop_pct:
+        parts.append(f"Trailing stop {trailing_stop_pct:.1f}%")
+    if price_alerts:
+        for a in price_alerts:
+            arrow = "↑" if a.get("direction") == "above" else "↓"
+            parts.append(f"Alert {arrow}${a['price']:.2f}" + (f" ({a['note']})" if a.get("note") else ""))
+
+    entry = {
+        "date":              str(date.today()),
+        "ticker":            ticker,
+        "setup_type":        "other",
+        "direction":         "Long",
+        "entry_price":       round(current_price, 2) if current_price else None,
+        "stop_price":        stop_loss,
+        "target_price":      None,
+        "r_multiple_entry":  None,
+        "position_size":     None,
+        "execution_quality": None,
+        "emotional_state":   "disciplined",
+        "result":            "Open",
+        "actual_r":          None,
+        "did_right":         "; ".join(parts) if parts else "Set risk levels",
+        "would_change":      "",
+        "_type":             "stop_note",
+    }
+    try:
+        if not prepend_entry(entry):
+            st.warning(HE["journal_corrupt"])
+    except Exception:
+        _log.warning("Could not write stop note to journal", exc_info=True)
+
+
+def _render_stops_tab(portfolio, prices):
+    alerts = get_alerts(portfolio)
+
+    all_t = sorted(all_tickers(portfolio))
+    owned = [
+        t for t in all_t
+        if any(lot.get("shares", 0) > 0 for _l, lot in lots_for_ticker(portfolio, t))
+    ]
+    watched = [t for t in all_t if t not in owned]
+
+    # ── Section 1: Owned stocks ───────────────────────────────────────────────
+    st.markdown(
+        '<div dir="rtl" style="font-size:14px;font-weight:700;color:#00cf8d;margin-bottom:8px">'
+        '📌 ניירות ערך בבעלות — עצירות והתראות</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not owned:
+        st.caption("אין ניירות ערך בבעלות.")
+    else:
+        # Summary status table
+        _TH = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:2px solid #333;font-size:11px;text-align:right"
+        _TD = "padding:5px 8px;font-size:11px"
+        hdr = (
+            '<div dir="rtl"><table style="width:100%;border-collapse:collapse">'
+            '<thead><tr>'
+            f'<th style="{_TH}">Ticker</th>'
+            f'<th style="{_TH}">מחיר נוכחי</th>'
+            f'<th style="{_TH}">Stop Loss</th>'
+            f'<th style="{_TH}">מרחק %</th>'
+            f'<th style="{_TH}">Trailing %</th>'
+            f'<th style="{_TH}">Trailing $</th>'
+            f'<th style="{_TH}">התראות מחיר</th>'
+            '</tr></thead><tbody>'
+        )
+        rows = ""
+        for t in owned:
+            p    = prices.get(t) or {}
+            cur  = p.get("price")
+            al   = alerts.get(t, {})
+            stop = al.get("stop_loss")
+            trl  = al.get("trailing_stop_pct")
+            palerts = al.get("price_alerts", [])
+            sym  = "₪" if (is_tase_numeric(t) or p.get("currency") == "ILS") else "$"
+
+            cur_str  = f"{sym}{cur:.2f}" if cur else "—"
+            stop_str = f"{sym}{stop:.2f}" if stop else "—"
+            trl_str  = f"{trl:.1f}%" if trl else "—"
+
+            if trl and cur:
+                tp = cur * (1 - trl / 100)
+                trl_p_str = f"{sym}{tp:.2f}"
+            else:
+                trl_p_str = "—"
+
+            if stop and cur:
+                dist = (cur - stop) / cur * 100
+                if dist < 5:
+                    dist_color = COLOR["negative"]
+                elif dist < 10:
+                    dist_color = COLOR["warning"]
+                else:
+                    dist_color = COLOR["positive"]
+                dist_str = f'<span style="color:{dist_color};font-weight:700">{dist:.1f}%</span>'
+            else:
+                dist_str = "—"
+
+            alert_badges = ""
+            for a in palerts:
+                arrow = "↑" if a.get("direction") == "above" else "↓"
+                ac = COLOR["positive"] if a.get("direction") == "above" else COLOR["negative"]
+                note_part = f' <span style="font-weight:400;opacity:.8">{a["note"]}</span>' if a.get("note") else ""
+                alert_badges += (
+                    f'<span style="background:{ac}22;color:{ac};border:1px solid {ac}44;'
+                    f'font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;'
+                    f'margin-right:4px;display:inline-block">{arrow}{sym}{a["price"]:.2f}{note_part}</span>'
+                )
+
+            rows += (
+                f'<tr style="border-bottom:1px solid #1e2d45">'
+                f'<td style="{_TD};font-weight:700;color:{COLOR["primary"]}">{t}</td>'
+                f'<td style="{_TD}">{cur_str}</td>'
+                f'<td style="{_TD}">{stop_str}</td>'
+                f'<td style="{_TD}">{dist_str}</td>'
+                f'<td style="{_TD}">{trl_str}</td>'
+                f'<td style="{_TD}">{trl_p_str}</td>'
+                f'<td style="{_TD}">{alert_badges if alert_badges else "—"}</td>'
+                f'</tr>'
+            )
+
+        st.markdown(
+            f'<div dir="rtl" style="background:#0f1729;border:1px solid #1e2d45;'
+            f'border-radius:8px;padding:8px;margin-bottom:12px">'
+            f'{hdr}{rows}</tbody></table></div></div>',
+            unsafe_allow_html=True,
+        )
+
+        # Per-ticker expanders
+        for t in owned:
+            p   = prices.get(t) or {}
+            cur = p.get("price")
+            al  = alerts.get(t, {})
+            sym = "₪" if (is_tase_numeric(t) or p.get("currency") == "ILS") else "$"
+            name = TICKER_NAMES.get(t) or p.get("name", "")
+            label = f"{t} — {name}" if name else t
+
+            with st.expander(f"⚙️ {label}"):
+                c1, c2 = st.columns(2)
+                new_stop = c1.number_input(
+                    f"Stop Loss ({sym})",
+                    min_value=0.0,
+                    value=float(al.get("stop_loss") or 0.0),
+                    step=0.5,
+                    format="%.2f",
+                    key=f"stop_{t}",
+                )
+                new_trail = c2.number_input(
+                    "Trailing Stop (%)",
+                    min_value=0.0,
+                    max_value=50.0,
+                    value=float(al.get("trailing_stop_pct") or 0.0),
+                    step=0.5,
+                    format="%.1f",
+                    key=f"trail_{t}",
+                )
+
+                st.markdown(
+                    '<div dir="rtl" style="font-size:11px;color:#94a3b8;margin-top:6px;margin-bottom:4px">'
+                    '⚡ התראות מחיר</div>',
+                    unsafe_allow_html=True,
+                )
+
+                existing_alerts = list(al.get("price_alerts", []))
+
+                # Show existing alerts with remove buttons
+                to_remove = []
+                for idx, a in enumerate(existing_alerts):
+                    arrow = "↑" if a.get("direction") == "above" else "↓"
+                    ca1, ca2 = st.columns([5, 1])
+                    ca1.markdown(
+                        f'{arrow} **{sym}{a["price"]:.2f}**'
+                        + (f' — {a["note"]}' if a.get("note") else ""),
+                    )
+                    if ca2.button("✕", key=f"rm_alert_{t}_{idx}"):
+                        to_remove.append(idx)
+                if to_remove:
+                    existing_alerts = [a for i, a in enumerate(existing_alerts) if i not in to_remove]
+                    set_ticker_alerts(
+                        portfolio, t,
+                        new_stop or None,
+                        new_trail or None,
+                        existing_alerts,
+                    )
+                    st.rerun()
+
+                # Add new alert row
+                na1, na2, na3, na4 = st.columns([2, 2, 3, 1])
+                new_dir   = na1.selectbox("כיוון", ["above ↑", "below ↓"], key=f"ndir_{t}", label_visibility="collapsed")
+                new_ap    = na2.number_input(f"מחיר ({sym})", min_value=0.0, step=0.5, format="%.2f", key=f"nap_{t}", label_visibility="collapsed")
+                new_note  = na3.text_input("הערה", key=f"nnote_{t}", label_visibility="collapsed", placeholder="הערה (אופציונלי)")
+                if na4.button("➕", key=f"add_alert_{t}") and new_ap > 0:
+                    existing_alerts.append({
+                        "price":     round(new_ap, 2),
+                        "direction": "above" if "above" in new_dir else "below",
+                        "note":      new_note.strip(),
+                    })
+                    set_ticker_alerts(portfolio, t, new_stop or None, new_trail or None, existing_alerts)
+                    _log_stops_to_journal(t, cur, new_stop or None, new_trail or None, existing_alerts)
+                    st.rerun()
+
+                st.markdown("")
+                bc1, bc2 = st.columns([3, 1])
+                if bc1.button("💾 שמור עצירות", key=f"save_stop_{t}", type="primary"):
+                    set_ticker_alerts(
+                        portfolio, t,
+                        new_stop or None,
+                        new_trail or None,
+                        existing_alerts,
+                    )
+                    _log_stops_to_journal(t, cur, new_stop or None, new_trail or None, existing_alerts)
+                    st.success(f"✓ {t} — עודכן")
+                    st.rerun()
+                if bc2.button("🗑 נקה", key=f"clear_stop_{t}"):
+                    set_ticker_alerts(portfolio, t, None, None, [])
+                    st.rerun()
+
+    # ── Section 2: Watch-only tickers ────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        '<div dir="rtl" style="font-size:14px;font-weight:700;color:#64748b;margin-bottom:8px">'
+        '👁 מעקב בלבד — התראות מחיר</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not watched:
+        st.caption("אין ניירות ערך במעקב בלבד.")
+        return
+
+    # Watch-only summary table
+    _TH2 = f"padding:5px 8px;color:{COLOR['primary']};border-bottom:2px solid #333;font-size:11px;text-align:right"
+    _TD2 = "padding:5px 8px;font-size:11px"
+    w_hdr = (
+        '<div dir="rtl"><table style="width:100%;border-collapse:collapse">'
+        '<thead><tr>'
+        f'<th style="{_TH2}">Ticker</th>'
+        f'<th style="{_TH2}">מחיר נוכחי</th>'
+        f'<th style="{_TH2}">שינוי %</th>'
+        f'<th style="{_TH2}">התראות מחיר</th>'
+        '</tr></thead><tbody>'
+    )
+    w_rows = ""
+    for t in watched:
+        p   = prices.get(t) or {}
+        cur = p.get("price")
+        chg = p.get("change")
+        al  = alerts.get(t, {})
+        sym = "₪" if (is_tase_numeric(t) or p.get("currency") == "ILS") else "$"
+
+        cur_str = f"{sym}{cur:.2f}" if cur else "—"
+        if chg is not None:
+            cc = COLOR["positive"] if chg >= 0 else COLOR["negative"]
+            chg_str = f'<span style="color:{cc}">{chg:+.2f}%</span>'
+        else:
+            chg_str = "—"
+
+        palerts = al.get("price_alerts", [])
+        badge_html = ""
+        for a in palerts:
+            arrow = "↑" if a.get("direction") == "above" else "↓"
+            ac = COLOR["positive"] if a.get("direction") == "above" else COLOR["negative"]
+            note_part = f' <span style="font-weight:400;opacity:.8">{a["note"]}</span>' if a.get("note") else ""
+            badge_html += (
+                f'<span style="background:{ac}22;color:{ac};border:1px solid {ac}44;'
+                f'font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;'
+                f'margin-right:4px;display:inline-block">'
+                f'{arrow}{sym}{a["price"]:.2f}{note_part}</span>'
+            )
+
+        w_rows += (
+            f'<tr style="border-bottom:1px solid #1e2d45">'
+            f'<td style="{_TD2};font-weight:700;color:{COLOR["text_dim"]}">{t}</td>'
+            f'<td style="{_TD2}">{cur_str}</td>'
+            f'<td style="{_TD2}">{chg_str}</td>'
+            f'<td style="{_TD2}">{badge_html if badge_html else "—"}</td>'
+            f'</tr>'
+        )
+
+    st.markdown(
+        f'<div dir="rtl" style="background:#0f1729;border:1px solid #1e2d45;'
+        f'border-radius:8px;padding:8px;margin-bottom:12px">'
+        f'{w_hdr}{w_rows}</tbody></table></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Per-ticker alert forms for watch-only
+    for t in watched:
+        p   = prices.get(t) or {}
+        al  = alerts.get(t, {})
+        sym = "₪" if (is_tase_numeric(t) or p.get("currency") == "ILS") else "$"
+        name = TICKER_NAMES.get(t) or p.get("name", "")
+        label = f"{t} — {name}" if name else t
+
+        with st.expander(f"⚡ {label} — התראות"):
+            existing_alerts = list(al.get("price_alerts", []))
+
+            to_remove = []
+            for idx, a in enumerate(existing_alerts):
+                arrow = "↑" if a.get("direction") == "above" else "↓"
+                wa1, wa2 = st.columns([5, 1])
+                wa1.markdown(
+                    f'{arrow} **{sym}{a["price"]:.2f}**'
+                    + (f' — {a["note"]}' if a.get("note") else ""),
+                )
+                if wa2.button("✕", key=f"rm_walert_{t}_{idx}"):
+                    to_remove.append(idx)
+            if to_remove:
+                existing_alerts = [a for i, a in enumerate(existing_alerts) if i not in to_remove]
+                set_ticker_alerts(portfolio, t, None, None, existing_alerts)
+                st.rerun()
+
+            wn1, wn2, wn3, wn4 = st.columns([2, 2, 3, 1])
+            w_dir  = wn1.selectbox("כיוון", ["above ↑", "below ↓"], key=f"wdir_{t}", label_visibility="collapsed")
+            w_ap   = wn2.number_input(f"מחיר ({sym})", min_value=0.0, step=0.5, format="%.2f", key=f"wap_{t}", label_visibility="collapsed")
+            w_note = wn3.text_input("הערה", key=f"wnote_{t}", label_visibility="collapsed", placeholder="הערה (אופציונלי)")
+            if wn4.button("➕", key=f"wadd_{t}") and w_ap > 0:
+                existing_alerts.append({
+                    "price":     round(w_ap, 2),
+                    "direction": "above" if "above" in w_dir else "below",
+                    "note":      w_note.strip(),
+                })
+                set_ticker_alerts(portfolio, t, None, None, existing_alerts)
                 st.rerun()

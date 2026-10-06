@@ -7,10 +7,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.config import COLOR, HE, LAYER_COLORS, SECTOR_ETFS, TICKER_NAMES, is_tase_numeric
-from src.data.prices import lookup_buy_price
 from src.data.technicals import compute_correlation_matrix
 from src.portfolio import add_lot, all_tickers, get_layer_for_ticker, lots_for_ticker, remove_ticker
 from src.ui_helpers import color_legend, portfolio_treemap, section_title, term_glossary
+from src.valuation import compute_holdings
 
 # ── Stress-test scenario definitions ─────────────────────────────────────────
 # Per-ticker shock estimates for 6 macro scenarios.
@@ -85,16 +85,11 @@ _STRESS_SHOCKS = {
 }
 
 
-def render_overview(portfolio, data, market_state, td_str):
-    prices      = data["prices"]
-    targets     = data["targets"]
-    consensus   = data["consensus"]
-    macro       = data["macro"]
-
-    _render_macro_strip(macro)
+def render_securities(portfolio, data, td_str):
+    """תיק → ניירות ערך: add/remove tickers, performance table, fundamentals."""
     _render_manage_tickers(portfolio)
     st.divider()
-    _render_performance_table(portfolio, prices, targets, consensus)
+    _render_performance_table(portfolio, data["prices"], data["targets"], data["consensus"])
     st.divider()
     _render_fundamentals_inline(portfolio, data, td_str)
 
@@ -129,7 +124,6 @@ def _render_manage_tickers(portfolio):
                     st.error("הכנס שם שכבה.")
                 else:
                     add_lot(portfolio, new_layer, new_ticker, new_shares, new_date)
-                    st.cache_data.clear()
                     st.success(f"נוסף {new_ticker} — רענון נתונים...")
                     st.rerun()
 
@@ -144,7 +138,6 @@ def _render_manage_tickers(portfolio):
                 st.warning(f"יסיר את כל הלוטים של {rm_ticker}", icon="⚠️")
                 if st.button(f"הסר {rm_ticker}", key="ov_rm_btn", use_container_width=True):
                     remove_ticker(portfolio, rm_ticker)
-                    st.cache_data.clear()
                     st.success(f"{rm_ticker} הוסר מהתיק.")
                     st.rerun()
 
@@ -189,7 +182,22 @@ def _render_macro_strip(macro):
 def _render_performance_table(portfolio, prices, targets, consensus):
     section_title("ביצועי תיק", "מחיר נוכחי, ביצוע שנתי מול VOO ויעדי אנליסטים לכל נייר")
 
-    # Pre-compute 1Y return for each layer's benchmark ETF (fallback: VOO)
+    # Map yfinance recommendationKey → display label
+    _REC_MAP = {
+        "strong_buy":    "Strong Buy",
+        "buy":           "Buy",
+        "outperform":    "Buy",
+        "overweight":    "Buy",
+        "hold":          "Hold",
+        "neutral":       "Hold",
+        "market_perform":"Hold",
+        "equal_weight":  "Hold",
+        "underperform":  "Sell",
+        "underweight":   "Sell",
+        "sell":          "Sell",
+        "strong_sell":   "Sell",
+    }
+
     def _bench_1y(layer_name):
         bench = SECTOR_ETFS.get(layer_name, "VOO")
         p = prices.get(bench)
@@ -197,7 +205,6 @@ def _render_performance_table(portfolio, prices, targets, consensus):
             h = p["history"]
             if len(h) > 1:
                 return ((h.iloc[-1] / h.iloc[0]) - 1) * 100, bench
-        # fallback to VOO
         voo_p = prices.get("VOO")
         if voo_p and voo_p.get("history") is not None:
             h = voo_p["history"]
@@ -205,7 +212,17 @@ def _render_performance_table(portfolio, prices, targets, consensus):
                 return ((h.iloc[-1] / h.iloc[0]) - 1) * 100, "VOO"
         return 0.0, "VOO"
 
-    rows = []
+    def _fmt_pe(val):
+        try:
+            f = float(val)
+            if f <= 0 or f > 5000:
+                return "—"
+            return f"{f:.1f}x"
+        except (TypeError, ValueError):
+            return "—"
+
+    _INF = float("inf")
+    rows_data = []
     for t in all_tickers(portfolio):
         layer    = get_layer_for_ticker(portfolio, t) or "אחר"
         is_watch = all(lot.get("shares", 0) == 0 for _l, lot in lots_for_ticker(portfolio, t))
@@ -213,9 +230,10 @@ def _render_performance_table(portfolio, prices, targets, consensus):
         tgt = targets.get(t)
         con = consensus.get(t, {})
 
-        is_tase = is_tase_numeric(t) or (p.get("currency") == "ILS" if p else False)
-        cur_sym = "₪" if is_tase else "$"
-        price_str  = f"{cur_sym}{p['price']:.2f}" if p else "—"
+        is_tase   = is_tase_numeric(t) or (p.get("currency") == "ILS" if p else False)
+        cur_sym   = "₪" if is_tase else "$"
+        price_val = p["price"] if p else None
+        price_str = f"{cur_sym}{price_val:.2f}" if price_val is not None else "—"
         change_val = p["change"] if p else None
         change_str = (
             f'<span style="color:{COLOR["positive"] if change_val >= 0 else COLOR["negative"]}">'
@@ -223,26 +241,49 @@ def _render_performance_table(portfolio, prices, targets, consensus):
             if change_val is not None else "—"
         )
 
+        # ── Upside: dedicated fetcher first, then prices["analyst_target"] fallback ──
+        upside_val = None
         upside_str = "—"
-        if not is_tase and p and tgt and tgt.get("mean"):
-            up = ((tgt["mean"] - p["price"]) / p["price"]) * 100
-            uc = COLOR["positive"] if up >= 0 else COLOR["negative"]
-            upside_str = f'<span style="color:{uc}">{up:+.1f}%</span>'
+        if not is_tase and p:
+            mean_target = None
+            if tgt and tgt.get("mean"):
+                mean_target = tgt["mean"]
+            elif p.get("analyst_target"):
+                mean_target = p["analyst_target"]
+            if mean_target and price_val:
+                upside_val = ((mean_target - price_val) / price_val) * 100
+                uc = COLOR["positive"] if upside_val >= 0 else COLOR["negative"]
+                upside_str = f'<span style="color:{uc}">{upside_val:+.1f}%</span>'
 
+        # ── Alpha 1Y (shown for all tickers including watch-list) ─────────────
+        alpha_val = None
         alpha_str = "—"
         if not is_tase and p and p.get("history") is not None and len(p["history"]) > 1:
             t_1y = ((p["history"].iloc[-1] / p["history"].iloc[0]) - 1) * 100
             bench_return, bench_ticker = _bench_1y(layer)
-            alpha = t_1y - bench_return
-            ac    = COLOR["positive"] if alpha >= 0 else COLOR["negative"]
+            alpha_val = t_1y - bench_return
+            ac        = COLOR["positive"] if alpha_val >= 0 else COLOR["negative"]
             alpha_str = (
-                f'<span style="color:{ac}">{alpha:+.1f}%</span>'
+                f'<span style="color:{ac}">{alpha_val:+.1f}%</span>'
                 f'<span style="font-size:9px;color:{COLOR["dim"]}"> vs {bench_ticker}</span>'
             )
 
-        label = "TASE" if is_tase else con.get("label", "N/A")
-        lc    = "#7c9fbf" if is_tase else (COLOR["positive"] if "Buy" in label else (COLOR["negative"] if "Sell" in label else COLOR["neutral"]))
-        cons_str = f'<span style="color:{lc}">{label}</span>'
+        # ── Consensus: dedicated fetcher first, then recommendationKey fallback ─
+        con_label = con.get("label", "N/A") if not is_tase else "TASE"
+        if con_label == "N/A" and p and p.get("recommendation"):
+            con_label = _REC_MAP.get(p["recommendation"].lower(), "Hold")
+        lc = (
+            "#7c9fbf" if is_tase
+            else COLOR["positive"] if "Buy" in con_label
+            else COLOR["negative"] if "Sell" in con_label
+            else COLOR["neutral"]
+        )
+        cons_str = f'<span style="color:{lc}">{con_label}</span>'
+
+        # ── P/E and Sector from prices .info snapshot ─────────────────────────
+        pe_str  = "—" if is_tase else _fmt_pe(p.get("pe") if p else None)
+        fpe_str = "—" if is_tase else _fmt_pe(p.get("forward_pe") if p else None)
+        sector_str = "" if is_tase else (p.get("sector") or "" if p else "")
 
         if is_watch:
             row_bg      = "background:#12121e"
@@ -251,8 +292,8 @@ def _render_performance_table(portfolio, prices, targets, consensus):
                 f'<span style="font-size:9px;color:#555;margin-right:4px"> מעקב</span>'
             )
         elif is_tase:
-            row_bg      = "background:#0d0d1a"
-            tase_tag    = (
+            row_bg   = "background:#0d0d1a"
+            tase_tag = (
                 '<span style="font-size:9px;color:#7c9fbf;border:1px solid #334;'
                 'border-radius:3px;padding:0 3px;margin-right:4px">₪</span>'
             )
@@ -264,35 +305,68 @@ def _render_performance_table(portfolio, prices, targets, consensus):
             row_bg      = ""
             ticker_html = f'<span style="color:{LAYER_COLORS.get(layer, COLOR["primary"])};font-weight:600">{t}</span>'
 
-        rows.append(
-            f'<tr style="{row_bg}">'
-            f'<td style="padding:4px 8px">{ticker_html}</td>'
-            f'<td style="padding:4px 8px;font-size:11px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t, t)}</td>'
-            f'<td style="padding:4px 8px">{price_str}</td>'
-            f'<td style="padding:4px 8px">{change_str}</td>'
-            f'<td style="padding:4px 8px">{upside_str}</td>'
-            f'<td style="padding:4px 8px">{"—" if is_watch else alpha_str}</td>'
-            f'<td style="padding:4px 8px">{cons_str}</td>'
-            f'</tr>'
-        )
+        rows_data.append({
+            "html": (
+                f'<tr style="{row_bg}">'
+                f'<td style="padding:4px 8px">{ticker_html}</td>'
+                f'<td style="padding:4px 8px;font-size:11px;color:{COLOR["text_dim"]}">{TICKER_NAMES.get(t, t)}</td>'
+                f'<td style="padding:4px 8px">{price_str}</td>'
+                f'<td style="padding:4px 8px">{change_str}</td>'
+                f'<td style="padding:4px 8px;font-size:11px">{pe_str}</td>'
+                f'<td style="padding:4px 8px;font-size:11px">{fpe_str}</td>'
+                f'<td style="padding:4px 8px;font-size:10px;color:{COLOR["text_dim"]}">{sector_str}</td>'
+                f'<td style="padding:4px 8px">{upside_str}</td>'
+                f'<td style="padding:4px 8px">{alpha_str}</td>'
+                f'<td style="padding:4px 8px">{cons_str}</td>'
+                f'</tr>'
+            ),
+            "s_ticker":  t,
+            "s_price":   price_val  if price_val  is not None else -_INF,
+            "s_change":  change_val if change_val is not None else -_INF,
+            "s_upside":  upside_val if upside_val is not None else -_INF,
+            "s_alpha":   alpha_val  if alpha_val  is not None else -_INF,
+            "s_consensus": con_label,
+        })
 
-    th = "padding:6px 8px;color:{c};border-bottom:1px solid #444;text-align:right".format(c=COLOR["primary"])
+    _SORT_OPTS = {
+        "Ticker":    "s_ticker",
+        "מחיר":      "s_price",
+        "שינוי %":   "s_change",
+        "אפסייד %":  "s_upside",
+        "Alpha 1Y":  "s_alpha",
+        "קונצנזוס":  "s_consensus",
+    }
+    _, _sc1, _sc2 = st.columns([4, 2, 1])
+    with _sc1:
+        sort_col = st.selectbox(
+            "מיין לפי", list(_SORT_OPTS.keys()),
+            key="perf_sort_col", label_visibility="collapsed",
+        )
+    with _sc2:
+        sort_asc = st.checkbox("↑", value=True, key="perf_sort_asc", help="סדר עולה")
+
+    rows_data.sort(key=lambda r: r[_SORT_OPTS[sort_col]], reverse=not sort_asc)
+
+    th = "padding:6px 8px;color:{c};border-bottom:1px solid #444;text-align:right;white-space:nowrap".format(c=COLOR["primary"])
     header = (
         f'<tr>'
         f'<th style="{th}">Ticker</th>'
         f'<th style="{th}">שם</th>'
         f'<th style="{th}">מחיר</th>'
         f'<th style="{th}">שינוי</th>'
+        f'<th style="{th}">P/E</th>'
+        f'<th style="{th}">Fwd P/E</th>'
+        f'<th style="{th}">ענף</th>'
         f'<th style="{th}">אפסייד</th>'
         f'<th style="{th}">Alpha 1Y</th>'
         f'<th style="{th}">קונצנזוס</th>'
         f'</tr>'
     )
     html = (
-        '<div role="region" aria-label="ביצועי תיק" dir="rtl" style="font-size:12px">'
+        '<div role="region" aria-label="ביצועי תיק" dir="rtl" style="font-size:12px;overflow-x:auto">'
         '<table style="width:100%;border-collapse:collapse">'
         f'<thead>{header}</thead>'
-        f'<tbody>{"".join(rows)}</tbody>'
+        f'<tbody>{"".join(r["html"] for r in rows_data)}</tbody>'
         '</table></div>'
     )
     st.markdown(html, unsafe_allow_html=True)
@@ -304,6 +378,8 @@ def _render_performance_table(portfolio, prices, targets, consensus):
     ])
     term_glossary([
         ("שינוי %",      "שינוי אחוזי ביחס למחיר הסגירה של יום המסחר הקודם."),
+        ("P/E",          "מכפיל רווח היסטורי (Trailing). P/E גבוה = תמחור יקר יחסית."),
+        ("Fwd P/E",      "מכפיל רווח עתידי לפי תחזיות אנליסטים — משקף ציפיות צמיחה."),
         ("אפסייד %",     "פוטנציאל עלייה לפי יעד המחיר הממוצע של האנליסטים: (יעד − מחיר) / מחיר × 100."),
         ("Alpha 1Y",     "תשואת הנייר ב-12 חודשים האחרונים פחות תשואת ה-ETF של השכבה (למשל XAR לביטחון, VOO לליבה). ערך חיובי = ביצועי יתר."),
         ("Strong Buy",   "לפחות 70% מהאנליסטים ממליצים קנייה או קנייה חזקה."),
@@ -314,26 +390,15 @@ def _render_performance_table(portfolio, prices, targets, consensus):
     ])
 
 
-def _render_pnl_summary(portfolio, prices):
+def _render_pnl_summary(portfolio, prices, ils_usd=None):
     section_title("סיכום תיק", "עלות, שווי נוכחי ורווח/הפסד כולל לכל הלוטים")
-    total_cost = total_value = 0.0
-    tase_cost  = tase_value  = 0.0
-    for t in all_tickers(portfolio):
-        p = prices.get(t)
-        if not p:
-            continue
-        is_tase = is_tase_numeric(t) or p.get("currency") == "ILS"
-        for _layer, lot in lots_for_ticker(portfolio, t):
-            if lot["shares"] <= 0:
-                continue
-            bp = lookup_buy_price(t, lot["buy_date"], prices)
-            if bp:
-                if is_tase:
-                    tase_cost  += lot["shares"] * bp
-                    tase_value += lot["shares"] * p["price"]
-                else:
-                    total_cost  += lot["shares"] * bp
-                    total_value += lot["shares"] * p["price"]
+    holdings   = compute_holdings(portfolio, prices, ils_usd)
+    usd_rows   = [r for r in holdings["tickers"].values() if r["currency"] == "USD"]
+    tase_rows  = [r for r in holdings["tickers"].values() if r["currency"] == "ILS"]
+    total_cost  = sum(r["cost_native"] for r in usd_rows)
+    total_value = sum(r["value_native"] for r in usd_rows)
+    tase_cost   = sum(r["cost_native"] for r in tase_rows)
+    tase_value  = sum(r["value_native"] for r in tase_rows)
 
     pnl     = total_value - total_cost
     pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0.0
@@ -382,24 +447,11 @@ def _render_pnl_summary(portfolio, prices):
     st.markdown(html, unsafe_allow_html=True)
 
 
-def _render_allocation_donut(portfolio, prices):
-    from src.data.macro import get_ils_usd_rate
-    ils_usd = get_ils_usd_rate()  # 1 NIS → USD, cached weekly
+def _render_allocation_donut(portfolio, prices, ils_usd=None):
+    holdings = compute_holdings(portfolio, prices, ils_usd)  # NIS converted to USD
 
     labels, values, colors = [], [], []
-    for layer, lots in portfolio["layers"].items():
-        layer_val = 0.0
-        for lot in lots:
-            t = lot["ticker"]
-            p = prices.get(t)
-            if not p:
-                continue
-            shares = max(lot.get("shares", 0), 0)
-            price  = p["price"]
-            if is_tase_numeric(t) or p.get("currency") == "ILS":
-                layer_val += shares * price * ils_usd  # convert NIS → USD
-            else:
-                layer_val += shares * price
+    for layer, layer_val in holdings["layers"].items():
         if layer_val > 0:
             labels.append(layer)
             values.append(layer_val)
@@ -535,20 +587,17 @@ def _ticker_shock(ticker, scenario, prices):
     return scenario["market_shock"]
 
 
-def _compute_portfolio_impacts(portfolio, prices):
+def _compute_portfolio_impacts(portfolio, prices, ils_usd=None):
     """Return (ticker_values, total_value, impacts).
 
-    ticker_values : {ticker: current_dollar_value}
+    ticker_values : {ticker: current USD value (TASE converted from NIS)}
     impacts       : {scenario_name: {ticker: shock_fraction, "_portfolio": weighted_avg_shock}}
     """
-    ticker_values = {}
-    for t in all_tickers(portfolio):
-        p = prices.get(t)
-        if not p:
-            continue
-        shares = sum(lot.get("shares", 0) for _, lot in lots_for_ticker(portfolio, t))
-        if shares > 0:
-            ticker_values[t] = shares * p["price"]
+    holdings = compute_holdings(portfolio, prices, ils_usd)
+    ticker_values = {
+        t: row["market_value_usd"] for t, row in holdings["tickers"].items()
+        if row["market_value_usd"] > 0
+    }
 
     total_value = sum(ticker_values.values())
     if total_value == 0:
@@ -579,13 +628,13 @@ def _stress_card(col, label, value, color="#ffffff", sub=""):
     )
 
 
-def _render_stress_test(portfolio, prices):
+def _render_stress_test(portfolio, prices, ils_usd=None):
     section_title(
         "בדיקת עמידות תיק",
         "הערכת השפעת תרחישי קיצון על התיק — בהתבסס על חשיפות סקטוריאליות ובטא היסטורית",
     )
 
-    ticker_values, total_value, impacts = _compute_portfolio_impacts(portfolio, prices)
+    ticker_values, total_value, impacts = _compute_portfolio_impacts(portfolio, prices, ils_usd)
 
     if not ticker_values or total_value == 0:
         st.caption("הזן מניות (כמות > 0) כדי לראות ניתוח תרחישים")
