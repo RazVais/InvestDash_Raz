@@ -9,7 +9,6 @@ from src.data.prices import get_current_price_or_daily_avg, lookup_buy_price
 from src.journal import prepend_entry
 from src.logger import get_logger
 from src.portfolio import (
-    add_closed_trade,
     add_lot,
     all_tickers,
     close_lot,
@@ -68,7 +67,6 @@ def render_portfolio(portfolio, data, td_str="", claude_api_key=""):
             _form_edit_lot(portfolio, prices)
         with c3:
             _form_remove(portfolio, prices)
-        _form_add_closed_trade(portfolio, prices)
 
     with tab_visuals:
         col1, col2 = st.columns([1, 1])
@@ -660,57 +658,6 @@ def _form_remove(portfolio, prices):
 
 
 # ── Trade history helpers ─────────────────────────────────────────────────────
-
-def _form_add_closed_trade(portfolio, prices):
-    """Expander to manually record a past closed trade (buy + sell pair)."""
-    with st.expander("📝 הוסף עסקה סגורה ידנית (לגיבוי היסטוריה)"):
-        existing = sorted(all_tickers(portfolio))
-        ticker_opts = existing + ["➕ טיקר אחר..."]
-        t_sel = st.selectbox("סימול", ticker_opts, key="ct_ticker_sel",
-                             format_func=lambda t: t if t != "➕ טיקר אחר..." else "➕ הקלד טיקר אחר")
-        if t_sel == "➕ טיקר אחר...":
-            ticker = st.text_input("סימול", key="ct_ticker_new", placeholder="e.g. NVDA").upper().strip()
-        else:
-            ticker = t_sel
-
-        layer = guess_layer(ticker) if ticker else list(portfolio["layers"].keys())[0]
-        if layer not in portfolio["layers"]:
-            layer = list(portfolio["layers"].keys())[0]
-        is_tase = is_tase_numeric(ticker) if ticker else False
-        sym = "₪" if is_tase else "$"
-
-        c1, c2 = st.columns(2)
-        shares     = c1.number_input("כמות מניות", min_value=0.001, step=0.001, format="%.3f", key="ct_shares")
-        buy_date   = c1.date_input("תאריך קנייה", key="ct_buy_date")
-        buy_price  = c1.number_input(f"מחיר קנייה ({sym})", min_value=0.0, step=0.01, format="%.2f", key="ct_buy_price")
-        sell_date  = c2.date_input("תאריך מכירה", value=date.today(), key="ct_sell_date")
-        sell_price = c2.number_input(f"מחיר מכירה ({sym})", min_value=0.0, step=0.01, format="%.2f", key="ct_sell_price")
-
-        if ticker and buy_price > 0 and sell_price > 0 and shares > 0:
-            pnl = (sell_price - buy_price) * shares
-            pnl_c = "#4CAF50" if pnl >= 0 else "#F44336"
-            st.markdown(
-                f'<div dir="rtl" style="font-size:12px;color:{pnl_c};font-weight:700;margin:4px 0">'
-                f'רווח/הפסד: {sym}{pnl:+,.2f} ({(pnl / (buy_price * shares) * 100):+.1f}%)'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-        if st.button("שמור עסקה", key="ct_save"):
-            if not ticker:
-                st.error("הכנס סימול.")
-            elif buy_price <= 0 or sell_price <= 0 or shares <= 0:
-                st.error("יש להזין כמות, מחיר קנייה ומחיר מכירה.")
-            else:
-                add_closed_trade(portfolio, ticker, shares, buy_price, buy_date,
-                                 sell_price, sell_date, layer)
-                pnl = (sell_price - buy_price) * shares
-                st.success(
-                    f"נשמר: {ticker} × {shares:.3f} | קנייה {sym}{buy_price:.2f} @ {buy_date} "
-                    f"→ מכירה {sym}{sell_price:.2f} @ {sell_date} | רווח/הפסד: {sym}{pnl:+,.2f}"
-                )
-                st.rerun()
-
 
 # ── Stops & Alerts tab ────────────────────────────────────────────────────────
 

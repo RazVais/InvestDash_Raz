@@ -1,4 +1,4 @@
-# RazDashboard v4.3
+# RazDashboard v4.5
 
 Personal investment dashboard for the "Age of AI" portfolio. Tracks stocks across strategic layers with live data from Yahoo Finance, Finviz, and Finnhub. Built with Streamlit + Python, Hebrew RTL UI.
 
@@ -9,8 +9,8 @@ Personal investment dashboard for the "Age of AI" portfolio. Tracks stocks acros
 |---|---|---|
 | **☀️ היום** | Daily check-in | Macro strip · change since yesterday (flow-adjusted) vs VOO · attention list (red flags, stops/alerts, earnings ≤ 7 days) · market pulse · AI session briefing · per-ticker AI briefs |
 | **💼 תיק** | What you own | 📊 P&L + add/edit/remove lots · 📉 performance history vs VOO (time-weighted, drawdown) · ⚖️ rebalancing vs layer targets with new-cash allocation · 📋 securities + fundamentals · 👥 analysts & buy timing · 🗺 charts (donut, heatmap, correlation, stress test) · ⚠️ stops & alerts |
-| **📈 מניה** | Buy/sell decisions on one ticker | Candlestick + indicators + relative strength · Monte Carlo · per-ticker AI (session, buy timing, consensus, 5 filters, news) · 📐 position-size calculator · 💡 ideas (suggestions + 5-filter screening) |
-| **🎯 תרגול** | Trading practice | ORB intraday setup · trailing-stop backtester · trade journal analysis · AI trade journal |
+| **📈 מניה** | Buy/sell decisions on one ticker | 🔍 analyse any ticker, even one you don't follow (⭐ to add it to the watch list) · Candlestick + indicators + relative strength · Monte Carlo · per-ticker AI (session, buy timing, consensus, 5 filters, news) · 📐 position-size calculator · 💡 ideas (suggestions + 5-filter screening) |
+| **🎯 תרגול** | Trading practice | ORB intraday setup · trailing-stop backtester · trade journal analysis (➕ add past trades by hand, with fees and setup type; edit/delete) · AI trade journal |
 
 The 🔔 bell in the header opens the full red-flags table.
 
@@ -112,3 +112,5 @@ dashboard.py          ← thin entry point (page config, KPI header, routing)
 | v4.1 | 2026-10-06 | Speed: star tier, per-ticker caches, AI once per ticker per day (≈21 Claude calls/day instead of 124+ per refresh) |
 | v4.2 | 2026-10-06 | Navigation: 4 job-based tabs (היום / תיק / מניה / תרגול) |
 | v4.3 | 2026-10-06 | Decision tools: performance history vs VOO, rebalancing, position sizer, stops & price alerts as red flags |
+| v4.4 | 2026-10-06 | Trading journal: add historic trades manually (fees, setup, note), delete trades |
+| v4.5 | 2026-10-08 | מניה: analyse any ticker by typing its symbol; ⭐ to keep it |

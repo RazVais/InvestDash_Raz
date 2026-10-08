@@ -393,17 +393,22 @@ CHART_SECTIONS    = ("chart", "mc", "analyst")   # מניה tab
 PRACTICE_SECTIONS = ("orb", "trailing")          # תרגול tab
 
 
-def render_charts(portfolio, data, td_str="", claude_api_key="", sections=CHART_SECTIONS):
+def render_charts(portfolio, data, td_str="", claude_api_key="", sections=CHART_SECTIONS,
+                  extra_tickers=()):
     """Ticker picker + the selected sections for the chosen ticker.
 
     sections: any of "chart" (candlestick + relative strength), "mc" (Monte Carlo),
     "analyst" (per-ticker AI/consensus/news), "orb", "trailing". The picker
     selection is shared, so switching between מניה and תרגול keeps the ticker.
+    extra_tickers: ad-hoc tickers (not in the portfolio) shown after the
+    portfolio ones with a 🔍 marker; their data must already be merged into `data`.
     """
     prices  = data["prices"]
     targets = data["targets"]
 
-    tickers = sorted(all_tickers(portfolio))
+    owned   = sorted(all_tickers(portfolio))
+    extras  = [t for t in extra_tickers if t not in owned]
+    tickers = owned + extras
     if not tickers:
         st.info("הוסף ניירות ערך לתיק כדי לראות גרפים.")
         return
@@ -458,6 +463,8 @@ def render_charts(portfolio, data, td_str="", claude_api_key="", sections=CHART_
                     if name and len(name) > 18:
                         name = name[:17] + "…"
                     label = f"{t}\n{name}" if name else t
+                    if t in extras:
+                        label = "🔍 " + label
                     if st.button(label, key=f"chart_btn_{t}", type=btn_type,
                                  use_container_width=True):
                         st.session_state.chart_sel = t

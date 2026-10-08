@@ -16,7 +16,7 @@ from typing import Optional
 import streamlit as st
 
 from src import ai
-from src.config import COLOR, HE, SUGGESTIONS, TICKER_NAMES
+from src.config import COLOR, HE, SUGGESTIONS
 from src.data.analysts import get_analyst_targets, get_consensus
 from src.data.fundamentals import FINVIZ_AVAILABLE, get_finviz_fundamentals
 from src.data.prices import get_stock_data_with_info
@@ -418,43 +418,10 @@ def _render_candidates(candidates, td_str, api_key, claude_api_key):
 
 
 def _render_custom_ticker_section(owned, td_str, api_key, claude_api_key):
-    """Render the custom ticker search input and its analysis."""
+    """Pointer to the 🔍 box at the top of מניה, which gives any ticker the full page
+    (chart, Monte Carlo, buy timing, consensus, 5 filters, news, sizing)."""
     st.divider()
-    st.markdown(
-        f'<div dir="rtl" style="font-size:13px;font-weight:700;color:{COLOR["primary"]};margin-bottom:8px">🔍 ניתוח מניה אחרת</div>',
-        unsafe_allow_html=True,
-    )
-    col_inp, col_btn = st.columns([3, 1])
-    with col_inp:
-        ticker_input = st.text_input(
-            "הכנס סימול מניה", placeholder="לדוגמה: TSLA, AAPL, PLTR",
-            key="analysis_custom_ticker", label_visibility="collapsed",
-        ).strip().upper()
-    with col_btn:
-        if st.button("🔍 נתח", key="analyze_custom_btn", use_container_width=True) and ticker_input:
-            st.session_state["_analysis_custom"] = ticker_input
-
-    custom = st.session_state.get("_analysis_custom", ticker_input) or ""
-    if not custom:
-        return
-    if custom in owned:
-        st.warning(f"{custom} כבר בתיק שלך — השתמש בטאב 'אנליסטים' לניתוח מפורט.")
-        return
-    with st.spinner(f"מנתח את {custom}..."):
-        cp   = get_stock_data_with_info((custom,), td_str).get(custom)
-        ctgt = get_analyst_targets((custom,), td_str).get(custom)
-        ccon = get_consensus((custom,), td_str, api_key).get(custom, {})
-        cfun: Optional[dict] = None
-        if FINVIZ_AVAILABLE:
-            cfun = (get_finviz_fundamentals((custom,), td_str) or {}).get(custom)
-    if not cp:
-        st.warning(f"לא נמצאו נתוני מחיר עבור {custom}. בדוק שהסימול תקין.")
-    else:
-        _render_ticker_section(
-            ticker=custom, name=TICKER_NAMES.get(custom, custom),
-            theme="ניתוח מותאם אישית", p=cp, con=ccon, tgt=ctgt,
-            fun=cfun, td_str=td_str, claude_api_key=claude_api_key, expanded=True,
-        )
+    st.caption(HE["adhoc_pointer"])
 
 
 # ── Main render ───────────────────────────────────────────────────────────────

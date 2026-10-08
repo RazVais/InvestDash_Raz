@@ -438,6 +438,40 @@ HE = {
     "size_position":     "פוזיציה",
     "size_at_risk":      "בסיכון",
     "size_stop_dist":    "מרחק סטופ",
+    # Ad-hoc ticker analysis (מניה)
+    "adhoc_label":       "נתח מניה חדשה",
+    "adhoc_placeholder": "🔍 נתח מניה חדשה — הקלד סימול (TSLA, PLTR, 1159250...)",
+    "adhoc_btn":         "🔍 נתח",
+    "adhoc_invalid":     "\"{t}\" אינו סימול תקין",
+    "adhoc_owned":       "{t} כבר בתיק — נבחר ברשימה",
+    "adhoc_loading":     "טוען נתונים עבור {t}...",
+    "adhoc_no_data":     "לא נמצאו נתוני מחיר עבור {t} — בדוק שהסימול נכון",
+    "adhoc_not_saved":   "🔍 {t} אינו בתיק — מוצג לניתוח בסשן הזה בלבד",
+    "adhoc_keep":        "⭐ הוסף למעקב",
+    "adhoc_drop":        "✕ הסר",
+    "adhoc_pointer":     "🔍 לניתוח מלא של מניה שאינה ברשימה — הקלד את הסימול בתיבה בראש עמוד \"מניה\"",
+    # Manual historic trade (trading journal)
+    "ht_title":          "➕ הוסף עסקה היסטורית ידנית",
+    "ht_help":           "עסקה סגורה (קנייה → מכירה) שלא נרשמה בתיק — נכנסת לסטטיסטיקות היומן",
+    "ht_ticker":         "סימול",
+    "ht_shares":         "כמות",
+    "ht_buy_date":       "תאריך קנייה",
+    "ht_buy_price":      "מחיר קנייה",
+    "ht_sell_date":      "תאריך מכירה",
+    "ht_sell_price":     "מחיר מכירה",
+    "ht_fees":           "עמלות (סה\"כ)",
+    "ht_setup":          "סטאפ",
+    "ht_setup_none":     "— ללא —",
+    "ht_note":           "הערה",
+    "ht_save":           "💾 שמור עסקה",
+    "ht_err_ticker":     "הכנס סימול",
+    "ht_err_values":     "כמות, מחיר קנייה ומחיר מכירה חייבים להיות גדולים מ-0",
+    "ht_err_dates":      "תאריך המכירה חייב להיות באותו יום או אחרי תאריך הקנייה",
+    "ht_err_future":     "תאריך המכירה לא יכול להיות בעתיד",
+    "ht_err_dup":        "עסקה זהה (סימול + תאריך קנייה + תאריך מכירה) כבר קיימת — ערוך אותה למטה",
+    "ht_saved":          "נשמר: {ticker} × {shares:g} | {sym}{buy:.2f} → {sym}{sell:.2f} | רווח/הפסד נטו {sym}{pnl:+,.2f}",
+    "ht_delete":         "🗑 מחק עסקה",
+    "ht_deleted":        "העסקה נמחקה",
     "alert_stop":        "סטופ לוס",
     "alert_trailing":    "סטופ נגרר",
     "alert_peak":        "שיא",
@@ -454,6 +488,9 @@ HE = {
 
 # ── Stock suggestions (curated complementary picks) ───────────────────────────
 # Each entry: ticker, name, theme (Hebrew), rationale (Hebrew), complements (list of portfolio tickers)
+# Setup types shared by both journals (stats journal + AI journal cards)
+SETUP_TYPES = ["breakout", "pullback_ema", "range", "vcp", "other"]
+
 SUGGESTIONS = [
     {
         "ticker":     "NVDA",

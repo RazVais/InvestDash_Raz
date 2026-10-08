@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 import streamlit as st
 
 from src import ai
-from src.config import HE
+from src.config import HE, SETUP_TYPES
 from src.journal import JournalReadError, load_journal, save_journal
 from src.ui_helpers import esc, fmt_api_error
 
@@ -267,7 +267,7 @@ def _render_edit_form(idx: int, t: Dict) -> None:
     """Render an inline edit form replacing the card at index idx."""
     st.caption(f"✏️ Editing — {t.get('ticker', '?')}")
 
-    setup_opts = ["breakout", "pullback_ema", "range", "vcp", "other"]
+    setup_opts = list(SETUP_TYPES)
     emo_opts   = ["calm", "disciplined", "anxious", "FOMO", "revenge"]
     dir_opts   = ["Long", "Short"]
     res_opts   = ["Open", "Win", "Loss", "Breakeven"]

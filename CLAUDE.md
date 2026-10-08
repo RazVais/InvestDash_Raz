@@ -80,11 +80,11 @@ RazDashboard/
 │   └── tabs/
 │       ├── today_tab.py           ← היום: macro strip, attention list (flags + earnings ≤7d), market pulse, session AI, briefs
 │       ├── portfolio_tab.py       ← תיק: P&L | ניירות ערך | אנליסטים ותזמון | תרשימים | עצירות; ⭐ star tier
-│       ├── ticker_tab.py          ← מניה: charts(sections=CHART_SECTIONS) + 💡 ideas (suggestions + 5-filter)
+│       ├── ticker_tab.py          ← מניה: 🔍 analyse any ticker (session-only, ⭐ to keep) + charts(sections=CHART_SECTIONS) + 💡 ideas
 │       ├── practice_tab.py        ← תרגול: charts(sections=PRACTICE_SECTIONS) + both journals
 │       ├── planning_tab.py        ← UI for history.py: 📉 ביצועים, ⚖️ איזון, 📐 position sizer, daily snapshot writer
 │       ├── overview.py            ← render_securities() (manage/perf table/fundamentals), donut, correlation, stress test
-│       ├── trading_journal_tab.py ← יומן עסקאות: retroactive P&L analysis + optional CSV
+│       ├── trading_journal_tab.py ← יומן עסקאות: retroactive P&L analysis + optional CSV; ➕ manual historic trade form; edit/delete history trades
 │       ├── charts.py              ← render_charts(sections=…): candlestick, MC, analyst panel | ORB, trailing stop
 │       ├── analysts_tab.py        ← render_analyst_views() (buy timing + consensus), session AI, market pulse
 │       ├── fundamentals_tab.py    ← valuation, earnings, dividends (inside תיק → ניירות ערך)
@@ -182,6 +182,7 @@ When adding a new ticker: check `red_flags.py` to decide which category it belon
 | yf_patch cookie cache | yfinance's cookie `lookup()` must return `{'cookie', 'age'}`; returning the bare cookie raised TypeError on every load and forced re-auth (more 429s) |
 | `.info` in the price cache | yfinance `.info` inside the 30-min `get_stock_data` cache re-fetched beta/P/E for all 66 tickers every refresh (~1 min cold under throttling). It is now `get_info_snapshot()` — 7d, active tickers only, merged by the loader |
 | Equity curve flows | Cost-basis diffs as cash flows book a fake gain/loss on every sell. Flow = Σ Δshares × today's price (snapshots store `shares` + `px`) |
+| AppTest harness on Windows | `AppTest.from_function` writes the script in cp1252 — no Hebrew or em-dashes in the function source; import `src.yf_patch` first inside it or yfinance's SQLite cache segfaults |
 | Pre-market snapshot | `last_trading_day` is today before the open but prices are yesterday's close — a final row then locks the wrong value. Skip pre-market |
 | Module state in dashboard.py | Streamlit re-executes `dashboard.py` on every rerun — module-level flags/Events there reset each time. Keep cross-rerun state in an imported module (`src/ai.py`, `loader._bg_done`) |
 | Concurrent cache misses | Background warmup + tab pre-warm + render all missed the same `@st.cache_data` key and each called Claude (3× calls). Wrap AI cache calls in `ai.key_lock(...)` |
@@ -203,3 +204,5 @@ When adding a new ticker: check `red_flags.py` to decide which category it belon
 | v4.1 | 2026-10-06 | Phase 1 speed + AI cost: star tier (`active_tickers()`, ⭐ multiselect) — analyst/Finviz/earnings/news + AI only for held ∪ starred; `src/ai.py` (shared client, `parse_json`, `key_lock`, call counter) — AI cached per (ticker, day), failures uncached, warmup once/day incl. session, buy-timing/5-filter AI on click (measured: 124+ calls/refresh → 21 calls/day; analysts tab 128s → 2.7s warm, 🔬 75s → 2s); per-ticker 7d caches via `src/data/batch.py` (8-request global cap, 15-min failure back-off); `refresh_live()` replaces all `st.cache_data.clear()`; Damodaran parallel + failures uncached; ILS fallback uncached; buy price 30d + searchsorted; Monte Carlo seeded + cached; flags computed once (`data["_flags"]`); TASE guard on intraday; prose AI no longer truncated (brief 600 tokens) |
 | v4.2 | 2026-10-06 | Phase 2 navigation: 8 screens → 4 job tabs (היום / תיק / מניה / תרגול); secondary tab bar removed; 💡+🔬 merged into מניה → רעיונות; `render_charts(sections=…)` shared by מניה and תרגול; היום never blocks on AI; `.info` split into 7d per-ticker `get_info_snapshot()` for active tickers (cold load 51s → 25s under Yahoo throttling); removed unused `render_overview` / `render_analysts` / `render_news` |
 | v4.3 | 2026-10-06 | Phase 3 decision tools: daily snapshots in `portfolio["snapshots"]` (provisional/final, pre-market skipped) + 🔁 one-year reconstruction; 📉 ביצועים (time-weighted index vs VOO, drawdown, 1M/3M/YTD/alpha); היום shows change since the last snapshot; ⚖️ איזון (editable layer targets, drift, new-cash allocation, buys only); 📐 position sizer under the chart (risk %, stop → shares, NIS-aware, layer weight after); stops/trailing/price alerts are now evaluated as red flags (bell + email) |
+| v4.4 | 2026-10-06 | Trading journal: ➕ manual historic trade form (fees, setup type → by-setup stats, note; validates dates/duplicates) moved here from תיק; 🗑 delete history trades; edit recomputes P&L net of fees; `add_closed_trade(fees, setup_type, note)`, `remove_closed_trade`, `find_closed_trade`, `closed_trade_pnl` in portfolio.py; `SETUP_TYPES` shared by both journals |
+| v4.5 | 2026-10-08 | מניה: 🔍 "נתח מניה חדשה" box — any ticker gets the full page (chart, MC, buy timing, consensus, 5 filters, news, sizer) for the session via `fetch_adhoc_data`/`merge_data`; ⭐ adds it as a starred watch-only lot; `render_charts(extra_tickers=…)`; ideas-tab custom 5-filter box replaced by a pointer |

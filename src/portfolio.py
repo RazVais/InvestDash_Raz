@@ -304,12 +304,31 @@ def _append_trade(portfolio, entry):
     portfolio.setdefault("trade_history", []).insert(0, entry)
 
 
-def add_closed_trade(portfolio, ticker, shares, buy_price, buy_date,
-                     sell_price, sell_date, layer):
-    """Manually record a completed buy→sell pair (for backfilling history)."""
+def closed_trade_pnl(buy_price, sell_price, shares, fees=0.0):
+    """Net P&L of a long round trip: (sell − buy) × shares − fees."""
+    return round((float(sell_price) - float(buy_price)) * float(shares) - float(fees or 0), 2)
+
+
+def find_closed_trade(portfolio, ticker, buy_date, sell_date):
+    """Return the trade_history sell entry for (ticker, buy_date, sell_date), or None."""
     ticker = ticker.upper().strip()
-    pnl = round((float(sell_price) - float(buy_price)) * float(shares), 2)
-    _append_trade(portfolio, {
+    for entry in portfolio.get("trade_history", []):
+        if (entry.get("action") == "sell"
+                and entry.get("ticker", "").upper() == ticker
+                and entry.get("buy_date", "") == str(buy_date)
+                and entry.get("date", "") == str(sell_date)):
+            return entry
+    return None
+
+
+def add_closed_trade(portfolio, ticker, shares, buy_price, buy_date,
+                     sell_price, sell_date, layer, fees=0.0, setup_type=None, note=""):
+    """Manually record a completed buy→sell pair (for backfilling history).
+
+    fees reduce P&L; setup_type feeds the journal's by-setup breakdown.
+    """
+    ticker = ticker.upper().strip()
+    entry = {
         "action":    "sell",
         "ticker":    ticker,
         "shares":    round(float(shares), 4),
@@ -318,10 +337,28 @@ def add_closed_trade(portfolio, ticker, shares, buy_price, buy_date,
         "layer":     layer,
         "buy_price": round(float(buy_price), 4),
         "buy_date":  str(buy_date),
-        "pnl":       pnl,
-    })
+        "pnl":       closed_trade_pnl(buy_price, sell_price, shares, fees),
+        "source":    "manual",
+    }
+    if fees:
+        entry["fees"] = round(float(fees), 2)
+    if setup_type:
+        entry["setup_type"] = setup_type
+    if note and note.strip():
+        entry["note"] = note.strip()
+    _append_trade(portfolio, entry)
     save_portfolio(portfolio)
     return portfolio
+
+
+def remove_closed_trade(portfolio, ticker, buy_date, sell_date):
+    """Delete one recorded sell (closed trade). Returns True if something was removed."""
+    entry = find_closed_trade(portfolio, ticker, buy_date, sell_date)
+    if entry is None:
+        return False
+    portfolio["trade_history"].remove(entry)
+    save_portfolio(portfolio)
+    return True
 
 
 def close_lot(portfolio, layer, ticker, buy_date, sell_date, sell_price):

@@ -19,9 +19,17 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from src.config import COLOR, is_tase_numeric
+from src.config import COLOR, HE, SETUP_TYPES, guess_layer, is_tase_numeric
 from src.data.prices import lookup_buy_price
-from src.portfolio import save_portfolio, update_lot
+from src.portfolio import (
+    add_closed_trade,
+    closed_trade_pnl,
+    find_closed_trade,
+    get_layer_for_ticker,
+    remove_closed_trade,
+    save_portfolio,
+    update_lot,
+)
 from src.ui_helpers import color_legend, section_title, term_glossary
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -151,6 +159,9 @@ def _history_to_closed_trades(portfolio: dict) -> pd.DataFrame:
             "shares":            shares,
             "pnl":               round(pnl, 2),
             "layer":             entry.get("layer"),
+            "setup_type":        entry.get("setup_type"),
+            "fees":              entry.get("fees"),
+            "note":              entry.get("note"),
             "source":            "history",
             "is_win":            pnl > 0,
             "day_of_week": (
@@ -1353,12 +1364,75 @@ def _render_trade_history(portfolio: dict, prices: dict) -> None:
                         sp = hist_entry.get("price")
                         sh = hist_entry.get("shares")
                         if bp and sp and sh:
-                            hist_entry["pnl"] = round(
-                                (float(sp) - float(bp)) * float(sh), 2
-                            )
+                            hist_entry["pnl"] = closed_trade_pnl(bp, sp, sh, hist_entry.get("fees"))
                         break
                 save_portfolio(portfolio)
             st.rerun()
+
+        if is_hist and st.button(HE["ht_delete"], key="tj_ed_delete"):
+            if remove_closed_trade(portfolio, sel_row["ticker"], sel_row["entry_date"],
+                                   sel_row.get("exit_date") or ""):
+                st.success(HE["ht_deleted"])
+            st.rerun()
+
+
+# ── Manual historic trade ─────────────────────────────────────────────────────
+
+def _validate_historic_trade(portfolio, ticker, shares, buy_price, sell_price,
+                             buy_date, sell_date, today=None) -> Optional[str]:
+    """Return a Hebrew error message, or None if the trade can be saved."""
+    today = today or datetime.date.today()
+    if not ticker:
+        return HE["ht_err_ticker"]
+    if shares <= 0 or buy_price <= 0 or sell_price <= 0:
+        return HE["ht_err_values"]
+    if sell_date < buy_date:
+        return HE["ht_err_dates"]
+    if sell_date > today:
+        return HE["ht_err_future"]
+    if find_closed_trade(portfolio, ticker, buy_date, sell_date) is not None:
+        return HE["ht_err_dup"]
+    return None
+
+
+def _render_add_historic_trade(portfolio: dict) -> None:
+    """Form to record a past closed trade by hand — it lands in trade_history and
+    feeds every stats section below (overall, layer, setup, day of week)."""
+    with st.expander(HE["ht_title"], expanded=False):
+        st.caption(HE["ht_help"])
+        with st.form("tj_add_historic", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            ticker     = c1.text_input(HE["ht_ticker"], placeholder="NVDA / 1146356").upper().strip()
+            shares     = c1.number_input(HE["ht_shares"], min_value=0.0, step=1.0, format="%.4f")
+            buy_date   = c2.date_input(HE["ht_buy_date"], value=datetime.date.today(),
+                                       max_value=datetime.date.today())
+            buy_price  = c2.number_input(HE["ht_buy_price"], min_value=0.0, step=0.01, format="%.4f")
+            sell_date  = c3.date_input(HE["ht_sell_date"], value=datetime.date.today(),
+                                       max_value=datetime.date.today())
+            sell_price = c3.number_input(HE["ht_sell_price"], min_value=0.0, step=0.01, format="%.4f")
+            c4, c5, c6 = st.columns(3)
+            fees  = c4.number_input(HE["ht_fees"], min_value=0.0, step=1.0, format="%.2f")
+            setup = c5.selectbox(HE["ht_setup"], [HE["ht_setup_none"]] + SETUP_TYPES)
+            note  = c6.text_input(HE["ht_note"])
+            submitted = st.form_submit_button(HE["ht_save"], type="primary")
+
+        if not submitted:
+            return
+        err = _validate_historic_trade(portfolio, ticker, shares, buy_price, sell_price,
+                                       buy_date, sell_date)
+        if err:
+            st.error(err)
+            return
+        layer = get_layer_for_ticker(portfolio, ticker) or guess_layer(ticker)
+        add_closed_trade(
+            portfolio, ticker, shares, buy_price, buy_date, sell_price, sell_date, layer,
+            fees=fees, setup_type=None if setup == HE["ht_setup_none"] else setup, note=note,
+        )
+        sym = "₪" if is_tase_numeric(ticker) else "$"
+        st.success(HE["ht_saved"].format(
+            ticker=ticker, shares=shares, sym=sym, buy=buy_price, sell=sell_price,
+            pnl=closed_trade_pnl(buy_price, sell_price, shares, fees),
+        ))
 
 
 def render_trading_journal(portfolio: dict, data: dict) -> None:
@@ -1367,6 +1441,8 @@ def render_trading_journal(portfolio: dict, data: dict) -> None:
         "יומן עסקאות",
         "ניתוח ביצועי מסחר — כל הלוטים מהתיק + עסקאות סגורות (CSV אופציונלי)",
     )
+
+    _render_add_historic_trade(portfolio)
 
     # ── Source A: auto-load from portfolio (open lots) ───────────────────────
     portfolio_df = _portfolio_to_trades(portfolio, data)
